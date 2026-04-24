@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Goofy Burger — The Best Fun Burgers in Puerto del Carmen, Lanzarote</title>
+    <meta name="description" content="Goofy Burger — Burgers, American food, roasts & breakfast on Av. de las Playas, Puerto del Carmen, Lanzarote. Open daily 9AM–11PM. Book now!">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=Bebas+Neue&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --red-primary: #E53935;
+            --red-light: #EF5350;
+            --red-dark: #C62828;
+            --blue-deep: #1A1A2E;
+            --blue-dark: #16213E;
+            --blue-midnight: #0F0F23;
+            --yellow: #FFD23F;
+            --yellow-light: #FFE566;
+            --pink: #E94560;
+            --pink-dark: #C73650;
+            --white: #FFFFFF;
+            --cream: #FFF8F0;
+            --text: #F0EDE8;
+            --text-muted: #9A9590;
+            --glass: rgba(255,255,255,0.04);
+            --glass-border: rgba(229,57,53,0.15);
+            --bg: var(--blue-midnight);
+            --bg-2: #12122A;
+            --bg-3: #1A1A3A;
+        }
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+        html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            overflow-x: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+        ::selection { background: var(--red-primary); color: var(--white); }
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--pink-dark); border-radius: 3px; }
+
+        /* ═══════ LANGUAGE TOGGLE ═══════ */
+        body.lang-en .es { display: none !important; }
+        body.lang-es .en { display: none !important; }
+        .lang-switch {
+            display: flex; align-items: center;
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .lang-btn {
+            padding: 0.4rem 0.8rem;
+            border: none; background: transparent;
+            color: var(--text-muted);
+            font-family: 'Inter', sans-serif;
+            font-size: 0.75rem;
+            font-weight: 700;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .lang-btn.active { background: var(--red-primary); color: var(--white); }
+        .lang-btn:hover:not(.active) { color: var(--white); }
+
+        /* ═══════ LOADER ═══════ */
+        #loader {
+            position: fixed; inset: 0; z-index: 10000;
+            background: var(--blue-midnight);
+            display: flex; align-items: center; justify-content: center;
+            transition: opacity 0.6s, visibility 0.6s;
+        }
+        #loader.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+        .loader-inner { text-align: center; }
+        .loader-burger { font-size: 3.5rem; animation: loaderBounce 0.8s ease-in-out infinite; }
+        @keyframes loaderBounce {
+            0%, 100% { transform: translateY(0) rotate(0deg); }
+            50% { transform: translateY(-20px) rotate(8deg); }
+        }
+        .loader-text {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 1.1rem;
+            color: var(--red-primary);
+            letter-spacing: 3px;
+            margin-top: 1rem;
+        }
+
+        /* ═══════ CURSOR ═══════ */
+        @media (hover:hover) and (pointer:fine) {
+            .cursor {
+                position: fixed; width: 20px; height: 20px;
+                border: 2px solid var(--red-primary);
+                border-radius: 50%; pointer-events: none; z-index: 99999;
+                transition: width 0.2s, height 0.2s, transform 0.1s;
+                transform: translate(-50%, -50%);
+            }
+            .cursor.hover { width: 50px; height: 50px; border-color: var(--yellow); }
+        }
+
+        /* ═══════ NAV ═══════ */
+        nav {
+            position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+            padding: 1.2rem 3rem;
+            display: flex; justify-content: space-between; align-items: center;
+            transition: all 0.4s;
+        }
+        nav.scrolled {
+            background: rgba(15,15,35,0.95);
+            backdrop-filter: blur(20px) saturate(180%);
+            padding: 0.8rem 3rem;
+            border-bottom: 1px solid var(--glass-border);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        }
+        .nav-logo {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 1.6rem;
+            color: var(--red-primary);
+            text-decoration: none;
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .nav-logo .logo-icon { font-size: 1.4rem; }
+        .nav-logo span { color: var(--yellow); }
+        .nav-links { display: flex; gap: 2.5rem; list-style: none; align-items: center; }
+        .nav-links a {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.78rem;
+            font-weight: 600;
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            transition: color 0.3s;
+            position: relative;
+            padding-bottom: 4px;
+        }
+        .nav-links a::after {
+            content: ''; position: absolute; bottom: 0; left: 0;
+            width: 0; height: 1px;
+            background: var(--red-primary);
+            transition: width 0.4s cubic-bezier(0.25,0.46,0.45,0.94);
+        }
+        .nav-links a:hover { color: var(--red-primary); }
+        .nav-links a:hover::after { width: 100%; }
+        .nav-cta-btn {
+            background: var(--red-primary) !important;
+            color: var(--white) !important;
+            padding: 0.6rem 1.5rem !important;
+            border-radius: 4px !important;
+            font-weight: 700 !important;
+            letter-spacing: 1.5px !important;
+            transition: all 0.3s !important;
+        }
+        .nav-cta-btn::after { display: none !important; }
+        .nav-cta-btn:hover {
+            background: var(--red-light) !important;
+            transform: translateY(-2px) !important;
+            box-shadow: 0 4px 20px rgba(229,57,53,0.4) !important;
+        }
+        .hamburger {
+            display: none; background: none; border: none;
+            color: var(--red-primary); font-size: 1.6rem; cursor: pointer; z-index: 1001;
+        }
+        @media (max-width: 900px) {
+            nav { padding: 1rem 1.5rem; }
+            nav.scrolled { padding: 0.8rem 1.5rem; }
+            .hamburger { display: block; }
+            .nav-links {
+                position: fixed; top: 0; right: -100%;
+                width: 75%; max-width: 350px; height: 100vh;
+                background: var(--blue-midnight);
+                flex-direction: column; justify-content: center;
+                padding: 2rem;
+                transition: right 0.4s cubic-bezier(0.77,0,0.175,1);
+                border-left: 1px solid var(--glass-border);
+            }
+            .nav-links.open { right: 0; }
+            .mob-overlay {
+                position: fixed; inset: 0;
+                background: rgba(0,0,0,0.6);
+                opacity: 0; visibility: hidden;
+                transition: all 0.4s; z-index: 998;
+            }
+            .mob-overlay.show { opacity: 1; visibility: visible; }
+        }
+
+        /* ═══════ HERO ═══════ */
+        .hero {
+            position: relative;
+            height: 100vh;
+            min-height: 700px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .hero-bg img {
+            position: absolute; inset: 0;
+            width: 100%; height: 100%;
+            object-fit: cover;
+            filter: brightness(0.3) contrast(1.1) saturate(1.3);
+            animation: heroKenBurns 25s ease-in-out infinite alternate;
+        }
+        @keyframes heroKenBurns {
+            0% { transform: scale(1) translate(0,0); }
+            100% { transform: scale(1.08) translate(-1%,-1%); }
+        }
+        .hero-gradient {
+            position: absolute; inset: 0;
+            background:
+                linear-gradient(to right, rgba(15,15,35,0.97) 0%, rgba(15,15,35,0.6) 50%, rgba(15,15,35,0.3) 100%),
+                linear-gradient(to bottom, transparent 60%, var(--bg) 100%);
+        }
+        .hero-particles { position: absolute; inset: 0; overflow: hidden; }
+        .particle {
+            position: absolute; width: 3px; height: 3px;
+            border-radius: 50%; opacity: 0;
+        }
+        .particle.orange { background: var(--red-primary); animation: floatUp 7s infinite; }
+        .particle.yellow { background: var(--yellow); animation: floatUp 7s infinite; }
+        @keyframes floatUp {
+            0% { opacity:0; transform: translateY(100vh) scale(0); }
+            10% { opacity:0.5; }
+            90% { opacity:0.5; }
+            100% { opacity:0; transform: translateY(-20vh) scale(1); }
+        }
+        .hero-content { position: relative; z-index: 3; padding: 4rem 5vw 2rem; max-width: 800px; text-align: center; }
+        .hero-eyebrow {
+            display: inline-flex; align-items: center; gap: 0.6rem;
+            font-family: 'Fredoka', sans-serif;
+            font-size: 0.9rem;
+            color: var(--red-primary);
+            letter-spacing: 1px;
+            margin-bottom: 1.5rem;
+            opacity: 0; animation: slideUp 0.8s 0.3s forwards;
+        }
+        .eyebrow-line { width: 40px; height: 2px; background: var(--red-primary); border-radius: 2px; }
+        .hero-title { font-family: 'Fredoka', sans-serif; font-size: clamp(2.5rem, 5.5vw, 5rem); font-weight: 700; line-height: 1.05; margin-bottom: 1.2rem; color: var(--white); opacity: 0; animation: slideUp 0.8s 0.5s forwards; }
+        .hero-title .accent { color: var(--red-primary); }
+        .hero-title .yellow { color: var(--yellow); }
+        .hero-title .outline-text {
+            -webkit-text-stroke: 2px var(--text-muted);
+            color: transparent;
+        }
+        .hero-sub { font-size: 1.05rem; color: var(--text-muted); font-weight: 300; line-height: 1.6; max-width: 520px; margin: 0 auto 2rem auto; opacity: 0; animation: slideUp 0.8s 0.7s forwards; }
+        .hero-btns {
+            display: flex; gap: 1rem; flex-wrap: wrap;
+            justify-content: center;
+            opacity: 0; animation: slideUp 0.8s 0.9s forwards;
+        }
+        .hero-stats { display: flex; gap: 2.5rem; justify-content: center; margin-top: 3rem; opacity: 0; animation: slideUp 0.8s 1.1s forwards; }
+        .hero-stat-val {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 2.8rem;
+            color: var(--red-primary);
+            line-height: 1;
+        }
+        .hero-stat-label {
+            font-size: 0.7rem;
+            color: var(--text-muted);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+            margin-top: 0.3rem;
+        }
+        @keyframes slideUp {
+            from { opacity:0; transform: translateY(40px); }
+            to { opacity:1; transform: translateY(0); }
+        }
+        .scroll-indicator { position: absolute; bottom: 2rem; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 0.5rem; opacity: 0; animation: slideUp 0.8s 1.4s forwards; }
+        .scroll-indicator span {
+            font-size: 0.65rem;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+        .scroll-bar {
+            width: 2px; height: 40px;
+            background: linear-gradient(to bottom, var(--red-primary), transparent);
+            animation: scrollP 2s ease-in-out infinite;
+        }
+        @keyframes scrollP {
+            0%,100% { opacity:0.3; height:40px; }
+            50% { opacity:1; height:60px; }
+        }
+
+        /* ═══════ MARQUEE ═══════ */
+        .marquee {
+            padding: 2rem 0;
+            background: var(--bg-2);
+            border-top: 1px solid var(--glass-border);
+            border-bottom: 1px solid var(--glass-border);
+            overflow: hidden;
+        }
+        .marquee-track {
+            display: flex; gap: 2rem;
+            animation: marqueeScroll 30s linear infinite;
+            width: max-content;
+        }
+        .marquee-item {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 2.2rem;
+            color: var(--bg-3);
+            display: flex; align-items: center; gap: 2rem;
+            flex-shrink: 0; white-space: nowrap;
+        }
+        .marquee-item .dot { width: 8px; height: 8px; background: var(--red-primary); border-radius: 50%; }
+        .marquee-item.accent { color: rgba(229,57,53,0.3); }
+        @keyframes marqueeScroll {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+        }
+
+        /* ═══════ SECTIONS ═══════ */
+        section { padding: 8rem 5vw; position: relative; }
+        .sec-inner { max-width: 1200px; margin: 0 auto; }
+        .sec-eyebrow {
+            display: inline-flex; align-items: center; gap: 0.8rem;
+            font-family: 'Fredoka', sans-serif;
+            font-size: 0.85rem;
+            letter-spacing: 2px;
+            color: var(--red-primary);
+            margin-bottom: 1rem;
+        }
+        .sec-eyebrow .line { width: 30px; height: 2px; background: var(--red-primary); border-radius: 2px; }
+        .sec-title {
+            font-family: 'Fredoka', sans-serif;
+            font-size: clamp(2.5rem, 5vw, 4rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+            color: var(--white);
+        }
+        .sec-subtitle {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            font-weight: 300;
+            max-width: 550px;
+            line-height: 1.7;
+        }
+        .reveal {
+            opacity: 0; transform: translateY(60px);
+            transition: opacity 0.8s cubic-bezier(0.25,0.46,0.45,0.94),
+                        transform 0.8s cubic-bezier(0.25,0.46,0.45,0.94);
+        }
+        .reveal.visible { opacity: 1; transform: translateY(0); }
+        .rd1 { transition-delay: 0.1s; }
+        .rd2 { transition-delay: 0.2s; }
+        .rd3 { transition-delay: 0.3s; }
+        .rd4 { transition-delay: 0.4s; }
+
+        /* ═══════ ABOUT ═══════ */
+        #about { background: var(--bg); }
+        .about-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5rem; align-items: center; }
+        .about-imgs { position: relative; }
+        .about-img-main {
+            width: 100%; aspect-ratio: 4/5;
+            object-fit: cover; border-radius: 12px;
+            box-shadow: 0 30px 80px rgba(0,0,0,0.6);
+        }
+        .about-img-float {
+            position: absolute; bottom: -3rem; right: -2rem;
+            width: 55%; aspect-ratio: 1;
+            object-fit: cover; border-radius: 12px;
+            border: 4px solid var(--bg);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+        }
+        .about-badge {
+            position: absolute; top: -1.5rem; left: -1.5rem;
+            background: var(--red-primary);
+            color: white;
+            padding: 1.5rem; border-radius: 50%;
+            width: 110px; height: 110px;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(229,57,53,0.3);
+            animation: badgeP 3s ease-in-out infinite;
+        }
+        @keyframes badgeP {
+            0%,100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+        .about-badge .bn { font-family: 'Bebas Neue', sans-serif; font-size: 2.5rem; line-height: 1; }
+        .about-badge .bt { font-size: 0.65rem; letter-spacing: 1px; text-transform: uppercase; }
+        .about-quote {
+            border-left: 3px solid var(--red-primary);
+            padding: 1.2rem 1.5rem;
+            margin: 2rem 0;
+            background: var(--glass);
+            border-radius: 0 8px 8px 0;
+        }
+        .about-quote p {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 1.2rem;
+            color: var(--red-light) !important;
+            line-height: 1.5;
+            margin-bottom: 0 !important;
+        }
+        .about-stats-row { display: flex; gap: 3rem; margin-top: 2.5rem; }
+        .about-stat .asv {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 3rem;
+            color: var(--red-primary);
+            line-height: 1;
+        }
+        .about-stat .asl {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            letter-spacing: 2px;
+            text-transform: uppercase;
+        }
+        @media (max-width: 900px) {
+            .about-grid { grid-template-columns: 1fr; gap: 3rem; }
+            .about-img-float { display: none; }
+        }
+
+        /* ═══════ SPECIALTIES ═══════ */
+        #specialties { background: var(--bg-2); border-top: 1px solid var(--glass-border); padding: 6rem 5vw; }
+        .spec-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2rem; margin-top: 3rem; }
+        .spec-card {
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 2.5rem 2rem;
+            text-align: center;
+            transition: all 0.4s;
+            position: relative;
+            overflow: hidden;
+        }
+        .spec-card::before {
+            content: ''; position: absolute; inset: 0;
+            background: linear-gradient(135deg, var(--red-dark), transparent);
+            opacity: 0; transition: opacity 0.4s;
+        }
+        .spec-card:hover { transform: translateY(-8px); border-color: var(--red-primary); box-shadow: 0 20px 50px rgba(229,57,53,0.1); }
+        .spec-card:hover::before { opacity: 0.1; }
+        .spec-icon { font-size: 2.8rem; margin-bottom: 1rem; position: relative; }
+        .spec-card h3 { font-family: 'Fredoka', sans-serif; font-size: 1.2rem; color: var(--white); margin-bottom: 0.5rem; position: relative; }
+        .spec-card p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.6; position: relative; }
+        @media (max-width: 900px) { .spec-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 600px) { .spec-grid { grid-template-columns: 1fr; } }
+
+        /* ═══════ PARALLAX DIVIDER ═══════ */
+        .px-divider {
+            position: relative;
+            height: 50vh;
+            min-height: 400px;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .px-divider img {
+            position: absolute; inset: -20%;
+            width: 140%; height: 140%;
+            object-fit: cover;
+            filter: brightness(0.25) saturate(0.8);
+        }
+        .px-overlay { position: absolute; inset: 0; background: rgba(15,15,35,0.5); }
+        .px-text { position: relative; z-index: 2; text-align: center; }
+        .px-text .big {
+            font-family: 'Fredoka', sans-serif;
+            font-size: clamp(3rem, 6vw, 5rem);
+            font-weight: 700;
+            color: var(--red-primary);
+            text-shadow: 0 4px 40px rgba(0,0,0,0.5);
+        }
+        .px-text .sub {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 1rem;
+            letter-spacing: 6px;
+            color: var(--text-muted);
+            margin-top: 1rem;
+            text-transform: uppercase;
+        }
+
+        /* ═══════ MENU ═══════ */
+        #menu { background: var(--bg); }
+        .menu-section-label {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 0.85rem;
+            letter-spacing: 3px;
+            color: var(--red-primary);
+            text-transform: uppercase;
+            margin: 2.5rem 0 1.5rem;
+            display: flex; align-items: center; gap: 1rem;
+        }
+        .menu-section-label::after { content: ''; flex: 1; height: 1px; background: var(--glass-border); }
+        .menu-list { display: flex; flex-direction: column; }
+        .menu-item {
+            display: grid;
+            grid-template-columns: 1fr auto;
+            gap: 1rem;
+            padding: 1.5rem 0;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+            transition: all 0.3s;
+            cursor: default;
+        }
+        .menu-item:hover { padding-left: 1rem; background: var(--glass); border-radius: 8px; }
+        .mi-name {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--white);
+            margin-bottom: 0.4rem;
+            display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;
+        }
+        .mi-desc { font-size: 0.88rem; color: var(--text-muted); line-height: 1.5; max-width: 500px; }
+        .mi-price {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 2rem;
+            color: var(--red-primary);
+            align-self: center;
+        }
+        .badge {
+            font-family: 'Inter', sans-serif;
+            font-size: 0.6rem; font-weight: 700;
+            letter-spacing: 1px; text-transform: uppercase;
+            padding: 0.2rem 0.6rem; border-radius: 3px;
+        }
+        .bp { background: var(--red-primary); color: var(--bg); }
+        .bn { background: var(--red-light); color: white; }
+        .bs { background: transparent; border: 1px solid var(--red-primary); color: var(--red-primary); }
+        @media (max-width: 600px) {
+            .menu-item { grid-template-columns: 1fr; }
+            .mi-price { align-self: start; }
+        }
+
+        /* ═══════ GALLERY ═══════ */
+        #gallery { background: var(--bg-2); }
+        .gallery-masonry { columns: 3; column-gap: 1rem; margin-top: 3rem; }
+        .g-item {
+            break-inside: avoid;
+            margin-bottom: 1rem;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            cursor: pointer;
+        }
+        .g-item img { width: 100%; display: block; transition: transform 0.6s; }
+        .g-item:hover img { transform: scale(1.05); }
+        .g-item .g-ov {
+            position: absolute; inset: 0;
+            background: linear-gradient(to top, rgba(15,15,35,0.8), transparent 50%);
+            opacity: 0; transition: opacity 0.4s;
+            display: flex; align-items: flex-end;
+            padding: 1.5rem;
+        }
+        .g-item:hover .g-ov { opacity: 1; }
+        .g-ov span { font-size: 0.8rem; color: var(--red-primary); letter-spacing: 2px; text-transform: uppercase; font-weight: 600; }
+        @media (max-width: 900px) { .gallery-masonry { columns: 2; } }
+        @media (max-width: 600px) { .gallery-masonry { columns: 1; } }
+
+        /* ═══════ REVIEWS ═══════ */
+        #reviews { background: var(--bg); }
+        .reviews-slider {
+            display: flex; gap: 2rem;
+            overflow-x: auto; scroll-snap-type: x mandatory;
+            scroll-behavior: smooth; padding: 2rem 0;
+            -ms-overflow-style: none; scrollbar-width: none;
+        }
+        .reviews-slider::-webkit-scrollbar { display: none; }
+        .review {
+            min-width: 380px; max-width: 420px;
+            scroll-snap-align: start;
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 2.5rem;
+            position: relative;
+        }
+        .review::before {
+            content: '"';
+            font-family: 'Fredoka', sans-serif;
+            font-size: 5rem;
+            color: var(--red-primary);
+            opacity: 0.12;
+            position: absolute;
+            top: 0.5rem; left: 1.5rem;
+            line-height: 1;
+        }
+        .review-stars { color: var(--yellow); font-size: 0.9rem; margin-bottom: 1rem; }
+        .review-text {
+            font-size: 1rem;
+            color: var(--text);
+            line-height: 1.7;
+            margin-bottom: 1.5rem;
+            font-style: italic;
+        }
+        .review-author { font-size: 0.85rem; font-weight: 600; color: var(--white); }
+        .review-source { font-size: 0.75rem; color: var(--text-muted); }
+        @media (max-width: 600px) { .review { min-width: 300px; padding: 1.5rem; } }
+
+        /* ═══════ CONTACT ═══════ */
+        #contact { background: var(--bg-2); border-top: 1px solid var(--glass-border); }
+        .contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5rem; }
+        .contact-cards { display: flex; flex-direction: column; gap: 1.5rem; }
+        .c-card {
+            background: var(--glass);
+            border: 1px solid var(--glass-border);
+            border-radius: 12px;
+            padding: 2rem;
+            transition: all 0.3s;
+        }
+        .c-card:hover { border-color: var(--red-primary); transform: translateX(8px); }
+        .c-card-icon { font-size: 1.5rem; margin-bottom: 0.8rem; }
+        .c-card h3 { font-family: 'Fredoka', sans-serif; font-size: 1.2rem; color: var(--white); margin-bottom: 0.5rem; }
+        .c-card p, .c-card a { color: var(--text-muted); font-size: 0.95rem; text-decoration: none; line-height: 1.8; }
+        .c-card a:hover { color: var(--red-primary); }
+        .c-map {
+            border-radius: 12px; overflow: hidden;
+            border: 1px solid var(--glass-border);
+            height: 100%; min-height: 450px;
+        }
+        .c-map iframe { width: 100%; height: 100%; border: 0; filter: grayscale(0.8) brightness(0.7) contrast(1.1); transition: filter 0.4s; }
+        .c-map:hover iframe { filter: grayscale(0.3) brightness(0.9) contrast(1.05); }
+        @media (max-width: 900px) { .contact-grid { grid-template-columns: 1fr; gap: 3rem; } }
+
+        /* ═══════ CTA ═══════ */
+        .cta-section {
+            position: relative; padding: 8rem 5vw; text-align: center; overflow: hidden;
+        }
+        .cta-bg {
+            position: absolute; inset: 0;
+            background: linear-gradient(135deg, var(--red-dark) 0%, #4A0A0A 50%, var(--bg) 100%);
+        }
+        .cta-pattern {
+            position: absolute; inset: 0;
+            background-image:
+                radial-gradient(circle at 20% 50%, rgba(229,57,53,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 80% 50%, rgba(255,210,63,0.08) 0%, transparent 50%);
+        }
+        .cta-inner { position: relative; z-index: 2; }
+        .btn-book {
+            display: inline-flex; align-items: center; gap: 0.8rem;
+            background: var(--white);
+            color: var(--blue-midnight);
+            padding: 1.2rem 3rem;
+            border-radius: 4px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            text-decoration: none;
+            transition: all 0.3s;
+            font-family: 'Fredoka', sans-serif;
+        }
+        .btn-book:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(255,255,255,0.15); }
+
+        /* ═══════ FOOTER ═══════ */
+        footer { background: var(--bg); border-top: 1px solid var(--glass-border); }
+        .ft-main {
+            max-width: 1200px; margin: 0 auto;
+            padding: 4rem 5vw;
+            display: grid;
+            grid-template-columns: 2fr 1fr 1fr 1fr;
+            gap: 3rem;
+        }
+        .ft-brand .ft-logo {
+            font-family: 'Fredoka', sans-serif;
+            font-size: 1.8rem;
+            color: var(--red-primary);
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .ft-brand .ft-logo span { color: var(--yellow); }
+        .ft-brand p { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.5rem; line-height: 1.7; max-width: 300px; }
+        .ft-col h4 {
+            font-family: 'Bebas Neue', sans-serif;
+            font-size: 0.9rem; letter-spacing: 3px;
+            color: var(--red-primary);
+            margin-bottom: 1.2rem;
+        }
+        .ft-col a {
+            display: block; color: var(--text-muted); text-decoration: none;
+            font-size: 0.88rem; margin-bottom: 0.6rem; transition: color 0.3s;
+        }
+        .ft-col a:hover { color: var(--red-primary); }
+        .ft-bottom {
+            max-width: 1200px; margin: 0 auto;
+            padding: 1.5rem 5vw;
+            border-top: 1px solid var(--glass-border);
+            display: flex; justify-content: space-between; align-items: center;
+            flex-wrap: wrap; gap: 1rem;
+        }
+        .ft-bottom p { font-size: 0.8rem; color: var(--text-muted); }
+        .ft-socials { display: flex; gap: 0.8rem; }
+        .ft-socials a {
+            width: 40px; height: 40px;
+            display: flex; align-items: center; justify-content: center;
+            border-radius: 50%; border: 1px solid var(--glass-border);
+            color: var(--text-muted); text-decoration: none;
+            font-size: 1.1rem; transition: all 0.3s;
+        }
+        .ft-socials a:hover { border-color: var(--red-primary); color: var(--red-primary); transform: translateY(-3px); background: var(--glass); }
+        @media (max-width: 900px) { .ft-main { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 600px) { .ft-main { grid-template-columns: 1fr; } .ft-bottom { flex-direction: column; text-align: center; } }
+    </style>
+</head>
+<body class="lang-en">
+
+    <!-- LOADER -->
+    <div id="loader">
+        <div class="loader-inner">
+            <div class="loader-burger">🍔</div>
+            <div class="loader-text">Goofy Burger</div>
+        </div>
+    </div>
+
+    <!-- CURSOR -->
+    <div class="cursor" id="cursor"></div>
+
+    <!-- NAV -->
+    <nav id="navbar">
+        <a href="#" class="nav-logo">
+            <span class="logo-icon">🍔</span> GOOFY <span>BURGER</span>
+        </a>
+        <ul class="nav-links" id="navLinks">
+            <li><a href="#about"><span class="en">About</span><span class="es">Historia</span></a></li>
+            <li><a href="#specialties"><span class="en">Specialties</span><span class="es">Especialidades</span></a></li>
+            <li><a href="#menu"><span class="en">Menu</span><span class="es">Carta</span></a></li>
+            <li><a href="#gallery"><span class="en">Gallery</span><span class="es">Galería</span></a></li>
+            <li><a href="#reviews"><span class="en">Reviews</span><span class="es">Opiniones</span></a></li>
+            <li><a href="#contact"><span class="en">Contact</span><span class="es">Contacto</span></a></li>
+            <li><a href="https://goofy-burger.123restaurant.es" target="_blank" class="nav-cta-btn"><span class="en">Book a Table</span><span class="es">Reservar</span></a></li>
+        </ul>
+        <div class="lang-switch">
+            <button class="lang-btn active" onclick="setLang('en')">EN</button>
+            <button class="lang-btn" onclick="setLang('es')">ES</button>
+        </div>
+        <button class="hamburger" onclick="document.getElementById('navLinks').classList.toggle('open');document.getElementById('mobOverlay').classList.toggle('show');" aria-label="Menu">☰</button>
+    </nav>
+    <div class="mob-overlay" id="mobOverlay" onclick="document.getElementById('navLinks').classList.remove('open');this.classList.remove('show');"></div>
+
+    <!-- ═══════ HERO ═══════ -->
+    <section class="hero">
+        <div class="hero-bg">
+            <img src="hero.jpg" alt="Goofy Burger Lanzarote" loading="eager">
+        </div>
+        <div class="hero-gradient"></div>
+        <div class="hero-particles" id="particles"></div>
+
+        <div class="hero-content">
+            <div class="hero-eyebrow">
+                <span class="eyebrow-line"></span>
+                Puerto del Carmen — Lanzarote 🌋
+            </div>
+            <h1 class="hero-title">
+                <span class="en">The Best<br><span class="accent">Fun</span> Burgers<br>in <span class="yellow">Lanzarote</span></span>
+                <span class="es">Las Mejores<br>Hamburguesas <span class="accent">Divertidas</span><br>en <span class="yellow">Lanzarote</span></span>
+            </h1>
+            <p class="hero-sub">
+                <span class="en">Burgers, American classics, all-day breakfast & more — right on Av. de las Playas. Open daily from 9 AM. The most fun restaurant in town!</span>
+                <span class="es">Hamburguesas, comida americana, desayunos todo el día y más — en plena Av. de las Playas. Abiertos todos los días desde las 9 AM. ¡El local más divertido de la zona!</span>
+            </p>
+            <div class="hero-btns">
+                <a href="https://goofy-burger.123restaurant.es" target="_blank" class="btn-book">
+                    <span class="en">📞 Book a Table</span><span class="es">📞 Reservar Mesa</span>
+                </a>
+                <a href="#menu" class="btn-book" style="background:transparent;border:2px solid var(--red-primary);color:var(--red-primary);">
+                    <span class="en">View Menu</span><span class="es">Ver Carta</span>
+                </a>
+            </div>
+            <div class="hero-stats">
+                <div class="hero-stat">
+                    <div class="hero-stat-val" data-count="492">0</div>
+                    <div class="hero-stat-label"><span class="en">Reviews</span><span class="es">Reseñas</span></div>
+                </div>
+                <div class="hero-stat">
+                    <div class="hero-stat-val" data-count="3.8">0</div>
+                    <div class="hero-stat-label"><span class="en">Google Rating</span><span class="es">Valoración Google</span></div>
+                </div>
+                <div class="hero-stat">
+                    <div class="hero-stat-val">12 PM</div>
+                    <div class="hero-stat-label"><span class="en">Daily Specials</span><span class="es">Ofertas del Día</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="scroll-indicator">
+            <span><span class="en">Scroll</span><span class="es">Bajar</span></span>
+            <span class="scroll-bar"></span>
+        </div>
+    </section>
+
+    <!-- MARQUEE -->
+    <div class="marquee">
+        <div class="marquee-track">
+            <span class="marquee-item">🍔 SMASH BURGERS <span class="dot"></span></span>
+            <span class="marquee-item accent">⭐ 3.8 / 5 <span class="dot"></span></span>
+            <span class="marquee-item">🍳 ALL DAY BREAKFAST <span class="dot"></span></span>
+            <span class="marquee-item accent">🌋 PUERTO DEL CARMEN <span class="dot"></span></span>
+            <span class="marquee-item">🎵 LIVE MUSIC <span class="dot"></span></span>
+            <span class="marquee-item accent">🍗 ROTISSERIE CHICKEN <span class="dot"></span></span>
+            <span class="marquee-item">🍟 DAILY SPECIALS <span class="dot"></span></span>
+            <span class="marquee-item accent">☀️ LANZAROTE <span class="dot"></span></span>
+            <span class="marquee-item">🍔 SMASH BURGERS <span class="dot"></span></span>
+            <span class="marquee-item accent">⭐ 3.8 / 5 <span class="dot"></span></span>
+            <span class="marquee-item">🍳 ALL DAY BREAKFAST <span class="dot"></span></span>
+            <span class="marquee-item accent">🌋 PUERTO DEL CARMEN <span class="dot"></span></span>
+            <span class="marquee-item">🎵 LIVE MUSIC <span class="dot"></span></span>
+            <span class="marquee-item accent">🍗 ROTISSERIE CHICKEN <span class="dot"></span></span>
+            <span class="marquee-item">🍟 DAILY SPECIALS <span class="dot"></span></span>
+            <span class="marquee-item accent">☀️ LANZAROTE <span class="dot"></span></span>
+        </div>
+    </div>
+
+    <!-- ═══════ ABOUT ═══════ -->
+    <section id="about">
+        <div class="sec-inner">
+            <div class="about-grid">
+                <div class="about-imgs reveal">
+                    <div class="about-badge">
+                        <span class="bn">🏝️</span>
+                        <span class="bt">Lanzarote</span>
+                    </div>
+                    <img src="interior.jpg" alt="Goofy Burger interior" class="about-img-main">
+                    <img src="fries.jpg" alt="Fries at Goofy Burger" class="about-img-float">
+                </div>
+                <div class="about-content">
+                    <div class="sec-eyebrow reveal">
+                        <span class="line"></span> <span class="en">Our Story</span><span class="es">Nuestra Historia</span>
+                    </div>
+                    <h2 class="sec-title reveal rd1">Fun, Food &<br><span style="color:var(--red-primary);">Good Vibes</span></h2>
+                    <p class="reveal rd2">
+        <span class="en">Nestled in the heart of <strong>Puerto del Carmen</strong> on Av. de las Playas, <strong>Goofy Burger</strong> is a bright, lively American-themed restaurant that's become a favourite stop for families and holidaymakers visiting Lanzarote. With a giant fibreglass Mickey Mouse welcoming you outside, you know you're in for a good time.</span>
+        <span class="es">En el corazón de Puerto del Carmen, en la Av. de las Playas, <strong>Goofy Burger</strong> es un animado restaurante de temática americana que se ha convertido en parada obligatoria para familias y turistas en Lanzarote. Con un Mickey Mouse gigante de fibra de vidrio dándote la bienvenida, sabes que te espera un buen rato.</span>
+    </p>
+                    <p class="reveal rd2">
+        <span class="en">From hearty full English breakfasts to juicy burgers, crispy kebabs, and famous lunchtime specials that won't break the bank — there's something for everyone. And when the sun goes down, there's <strong>live music</strong> too.</span>
+        <span class="es">De desayunos ingleses completos a jugosas hamburguesas, crujientes kebabs y famosas ofertas de mediodía que no te vacían el bolsillo — hay para todos los gustos. Y cuando cae el sol, también hay <strong>música en vivo</strong>.</span>
+    </p>
+                    <div class="about-quote reveal rd3">
+                        <p>
+        <span class="en">"Bargain lunchtime specials — hot, well presented and plentiful. Half roasted chicken with chips for €6.75!"</span>
+        <span class="es">"¡Ofertas de mediodía a precio de risa — caliente, bien presentado y abundante. ¡Medio pollo asado con patatas por 6,75€!"</span>
+    </p>
+                    </div>
+                    <div class="about-stats-row reveal rd4">
+                        <div class="about-stat">
+                            <div class="asv">492</div>
+                            <div class="asl"><span class="en">Google Reviews</span><span class="es">Reseñas Google</span></div>
+                        </div>
+                        <div class="about-stat">
+                            <div class="asv">€1.50</div>
+                            <div class="asl"><span class="en">Lunch Beers</span><span class="es">Cervezas al Mediodía</span></div>
+                        </div>
+                        <div class="about-stat">
+                            <div class="asv">🎤</div>
+                            <div class="asl"><span class="en">Live Singing</span><span class="es">Música en Vivo</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ SPECIALTIES ═══════ -->
+    <section id="specialties">
+        <div class="sec-inner">
+            <div style="text-align:center;">
+                <div class="sec-eyebrow reveal" style="justify-content:center;">
+                    <span class="line"></span> <span class="en">What We're Known For</span><span class="es">Nuestros Puntos Fuertes</span> <span class="line"></span>
+                </div>
+                <h2 class="sec-title reveal rd1"><span class="en">Our <span style="color:var(--red-primary);">Specialties</span></span><span class="es">Nuestras <span style="color:var(--red-primary);">Especialidades</span></span></h2>
+            </div>
+            <div class="spec-grid">
+                <div class="spec-card reveal">
+                    <div class="spec-icon">🍔</div>
+                    <h3><span class="en">Classic Burgers</span><span class="es">Hamburguesas Clásicas</span></h3>
+                    <p><span class="en">From quarter pounders to loaded special burgers — the heart of what we do, every day.</span><span class="es">De quarter pounders a hamburguesas cargadas — lo que nos define, todos los días.</span></p>
+                </div>
+                <div class="spec-card reveal rd1">
+                    <div class="spec-icon">🍳</div>
+                    <h3><span class="en">All-Day Breakfast</span><span class="es">Desayunos Todo el Día</span></h3>
+                    <p><span class="en">Full English, continental, eggs your way. Some say it's the best breakfast in Puerto del Carmen.</span><span class="es">Full English, continental, huevos a tu gusto. Muchos dicen que es el mejor desayuno de Puerto del Carmen.</span></p>
+                </div>
+                <div class="spec-card reveal rd2">
+                    <div class="spec-icon">🍗</div>
+                    <h3><span class="en">Rotisserie Chicken</span><span class="es">Pollo Asado</span></h3>
+                    <p><span class="en">Half or whole, golden and juicy. One of our most praised dishes — incredible value.</span><span class="es">Medio o entero, dorado y jugoso. Uno de nuestros platos más elogiados, a un precio increíble.</span></p>
+                </div>
+                <div class="spec-card reveal rd3">
+                    <div class="spec-icon">🌮</div>
+                    <h3>Kebabs & American</h3>
+                    <p>Kebabs, pizzas, steaks, wraps and more. Something for every taste at amazing prices.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- PARALLAX DIVIDER -->
+    <div class="px-divider">
+        <img src="interior.jpg" alt="Goofy Burger Lanzarote" id="parallaxImg">
+        <div class="px-overlay"></div>
+        <div class="px-text">
+            <div class="big">Fun, Food & Sun ☀️</div>
+            <div class="sub">Av. de las Playas, 49 — Puerto del Carmen</div>
+        </div>
+    </div>
+
+    <!-- ═══════ MENU ═══════ -->
+    <section id="menu">
+        <div class="sec-inner">
+            <div class="sec-eyebrow reveal"><span class="line"></span> <span class="en">Our Menu</span><span class="es">Nuestra Carta</span></div>
+            <h2 class="sec-title reveal rd1"><span class="en">What's On<strong style="color:var(--red-primary);"> Offer</strong></span><span class="es">Lo Que <strong style="color:var(--red-primary);">Ofrecemos</strong></span></h2>
+            <p class="sec-subtitle reveal rd2">From morning to night — breakfast, lunch specials, dinner & drinks. All at unbeatable Lanzarote prices.</p>
+
+            <div class="menu-section-label">🍳 <span class="en">Breakfast</span><span class="es">Desayunos</span></div>
+            <div class="menu-list">
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name">Full English <span class="en">Breakfast</span><span class="es">Completo</span> <span class="badge bp"><span class="en">Best Seller</span><span class="es">Más Vendido</span></span></div>
+                        <p class="mi-desc">Eggs your way, bacon, sausage, beans, toast, hash browns, grilled tomato & mushrooms. Served with tea or coffee.</p>
+                    </div>
+                    <div class="mi-price">€7.50</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name"><span class="en">Continental Breakfast</span><span class="es">Desayuno Continental</span></div>
+                        <p class="mi-desc"><span class="en">Fresh pastries, toast, fruit, juice, tea or coffee. The lighter option for early risers.</span><span class="es">Bollería fresca, tostada, fruta, zumo, té o café. La opción ligera para los madrugadores.</span></p>
+                    </div>
+                    <div class="mi-price">€5.00</div>
+                </div>
+                <div class="menu-item reveal rd2">
+                    <div>
+                        <div class="mi-name">Pancakes & Syrup</div>
+                        <p class="mi-desc"><span class="en">Fluffy pancakes with maple syrup and fresh berries. Perfect with a hot coffee.</span><span class="es">Pancakes esponjosos con sirope de arce y frutos rojos. Perfectos con un buen café.</span></p>
+                    </div>
+                    <div class="mi-price">€6.00</div>
+                </div>
+            </div>
+
+            <div class="menu-section">🍔 Burgers & American</div>
+            <div class="menu-list">
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name"><span class="en">Classic Quarter Pounder</span><span class="es">Quarter Pounder Clásica</span> <span class="badge bs"><span class="en">Signature</span><span class="es">Insignia</span></span></div>
+                        <p class="mi-desc">1/4 lb beef patty, lettuce, tomato, onion, cheese & Goofy sauce. Served with fries.</p>
+                    </div>
+                    <div class="mi-price">€8.50</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name"><span class="en">Double Goofy Burger</span><span class="es">Doble Goofy Burger</span> <span class="badge bp"><span class="en">Popular</span><span class="es">Popular</span></span></div>
+                        <p class="mi-desc">Double beef, double cheese, bacon, jalapeños, special sauce & crispy onion rings. The beast.</p>
+                    </div>
+                    <div class="mi-price">€11.00</div>
+                </div>
+                <div class="menu-item reveal rd2">
+                    <div>
+                        <div class="mi-name"><span class="en">Chicken Burger</span><span class="es">Hamburguesa de Pollo</span></div>
+                        <p class="mi-desc"><span class="en">Crispy chicken fillet, mayo, lettuce, tomato. Fresh and crunchy.</span><span class="es">Filete de pollo crujiente, mayonesa, lechuga, tomate. Fresca y crujiente.</span></p>
+                    </div>
+                    <div class="mi-price">€7.50</div>
+                </div>
+                <div class="menu-item reveal rd3">
+                    <div>
+                        <div class="mi-name">Steak & Fries</div>
+                        <p class="mi-desc">Grilled sirloin cooked to your preference, served with hand-cut fries, salad & peppercorn sauce.</p>
+                    </div>
+                    <div class="mi-price">€13.00</div>
+                </div>
+            </div>
+
+            <div class="menu-list">
+                <div class="menu-section-label">🍗 Rotisserie & Specials</div>
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name"><span class="en">Half Rotisserie Chicken</span><span class="es">Medio Pollo Asado</span> <span class="badge bp"><span class="en">🔥 Favourite</span><span class="es">🔥 Favorito</span></span></div>
+                        <p class="mi-desc"><span class="en">Golden rotisserie chicken with chips and salad. One of our highest-praised dishes.</span><span class="es">Pollo asado dorado con patatas y ensalada. Uno de nuestros platos más elogiados.</span></p>
+                    </div>
+                    <div class="mi-price">€6.75</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name"><span class="en">Whole Rotisserie Chicken</span><span class="es">Pollo Asado Entero</span></div>
+                        <p class="mi-desc"><span class="en">Full bird, crispy skin and juicy inside. Perfect for sharing. Comes with chips and salad.</span><span class="es">Pollo entero, piel crujiente y jugoso por dentro. Perfecto para compartir. Con patatas y ensalada.</span></p>
+                    </div>
+                    <div class="mi-price">€11.00</div>
+                </div>
+            </div>
+
+            <div class="menu-list">
+                <div class="menu-section-label">🌮 Kebabs, Pizzas & More</div>
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name"><span class="en">Doner Kebab</span><span class="es">Döner Kebab</span></div>
+                        <p class="mi-desc"><span class="en">Shaved doner meat in flatbread with salad and garlic or chilli sauce. Hot and generously filled.</span><span class="es">Carne döner en pan plano con ensalada y salsa de ajo o chili. Caliente y abundante.</span></p>
+                    </div>
+                    <div class="mi-price">€6.50</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name">Cheese & Bacon Pizza</div>
+                        <p class="mi-desc"><span class="en">Classic hand-stretched pizza with mozzarella, bacon and tomato base.</span><span class="es">Pizza clásica estirada a mano con mozzarella, bacon y base de tomate.</span></p>
+                    </div>
+                    <div class="mi-price">€8.00</div>
+                </div>
+                <div class="menu-item reveal rd2">
+                    <div>
+                        <div class="mi-name"><span class="en">Chicken Wrap</span><span class="es">Wrap de Pollo</span></div>
+                        <p class="mi-desc"><span class="en">Grilled chicken, fresh salad, cheese and sauce wrapped in a warm tortilla.</span><span class="es">Pollo a la plancha, ensalada fresca, queso y salsa envuelto en tortilla caliente.</span></p>
+                    </div>
+                    <div class="mi-price">€7.00</div>
+                </div>
+            </div>
+
+            <div class="menu-list">
+                <div class="menu-section-label">🥞 Starters, Sides & Desserts</div>
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name"><span class="en">Loaded Fries</span><span class="es">Patatas Cargadas</span> <span class="badge bp"><span class="en">Popular</span><span class="es">Popular</span></span></div>
+                        <p class="mi-desc"><span class="en">Golden fries topped with cheese, jalapeños, bacon bits and sour cream.</span><span class="es">Patatas doradas con queso, jalapeños, trocitos de bacon y crema agria.</span></p>
+                    </div>
+                    <div class="mi-price">€5.50</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name"><span class="en">Bruschetta</span></div>
+                        <p class="mi-desc"><span class="en">Toasted bread with tomato, cheese, bacon and fresh herbs. Light and tasty.</span><span class="es">Pan tostado con tomate, queso, bacon y hierbas frescas. Ligero y sabroso.</span></p>
+                    </div>
+                    <div class="mi-price">€5.00</div>
+                </div>
+                <div class="menu-item reveal rd2">
+                    <div>
+                        <div class="mi-name"><span class="en">Nutella Crepes</span><span class="es">Crepes de Nutella</span> <span class="badge bn"><span class="en">✨ Sweet</span><span class="es">✨ Dulce</span></span></div>
+                        <p class="mi-desc"><span class="en">Warm crepes with Nutella, fresh strawberries and a dusting of powdered sugar.</span><span class="es">Crepes calientes con Nutella, fresas frescas y azúcar glas.</span></p>
+                    </div>
+                    <div class="mi-price">€5.50</div>
+                </div>
+            </div>
+
+            <div class="menu-list">
+                <div class="menu-section-label">🍹 <span class="en">Drinks</span><span class="es">Bebidas</span></div>
+                <div class="menu-item reveal">
+                    <div>
+                        <div class="mi-name"><span class="en">Draft Beer</span><span class="es">Cerveza de Barril</span> <span class="badge bp">€1.50 lunch!</span></div>
+                        <p class="mi-desc"><span class="en">Cold local beers during lunch hours. Unbeatable price for your holiday.</span><span class="es">Cervezas locales bien frías al mediodía. Precio imbatible para tus vacaciones.</span></p>
+                    </div>
+                    <div class="mi-price">€1.50</div>
+                </div>
+                <div class="menu-item reveal rd1">
+                    <div>
+                        <div class="mi-name"><span class="en">Sangria</span><span class="es">Sangría</span></div>
+                        <p class="mi-desc"><span class="en">Homemade sangria — sweet, fruity, and perfect for a Lanzarote afternoon.</span><span class="es">Sangría casera — dulce, afrutada y perfecta para una tarde en Lanzarote.</span></p>
+                    </div>
+                    <div class="mi-price">€6.00</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ GALLERY ═══════ -->
+    <section id="gallery">
+        <div class="sec-inner">
+            <div class="sec-eyebrow reveal"><span class="line"></span> <span class="en">Gallery</span><span class="es">Galería</span></div>
+            <h2 class="sec-title reveal rd1"><span class="en">A Taste of <span style="color:var(--red-primary);">Goofy Burger</span></span><span class="es">El Sabor de <span style="color:var(--red-primary);">Goofy Burger</span></span></h2>
+            <div class="gallery-masonry reveal rd2">
+                <div class="g-item"><img src="hero.jpg" alt="Goofy Burger classic"><div class="g-ov"><span class="en">The Classic Burger</span><span class="es">La Hamburguesa Clásica</span></div></div>
+                <div class="g-item"><img src="interior.jpg" alt="Interior"><div class="g-ov"><span class="en">Our Space</span><span class="es">Nuestro Local</span></div></div>
+                <div class="g-item"><img src="breakfast.jpg" alt="Breakfast"><div class="g-ov"><span class="en">Full Breakfast</span><span class="es">Desayuno Completo</span></div></div>
+                <div class="g-item"><img src="chicken.jpg" alt="Rotisserie chicken"><div class="g-ov"><span class="en">Rotisserie Chicken</span><span class="es">Pollo Asado</span></div></div>
+                <div class="g-item"><img src="crepes.jpg" alt="Nutella crepes"><div class="g-ov"><span><span class="en">Nutella Crepes</span><span class="es">Crepes de Nutella</span></span></div></div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ REVIEWS ═══════ -->
+    <section id="reviews">
+        <div class="sec-inner">
+            <div style="text-align:center;">
+                <div class="sec-eyebrow reveal" style="justify-content:center;">
+                    <span class="line"></span> <span class="en">What People Say</span><span class="es">Lo Que Dicen</span> <span class="line"></span>
+                </div>
+                <h2 class="sec-title reveal rd1"><span class="en">Reviews from <span style="color:var(--red-primary);">Our Guests</span></span><span class="es">Opiniones de <span style="color:var(--red-primary);">Nuestros Clientes</span></span></h2>
+                <p class="sec-subtitle reveal rd2" style="margin:0 auto;"><span class="en">492 reviews on Google. Here are some:</span><span class="es">492 reseñas en Google. Aquí van algunas:</span></p>
+            </div>
+            <div class="reviews-slider reveal rd3">
+                <div class="review">
+                    <div class="review-stars">★★★★★</div>
+                    <p class="review-text">"Bargain lunchtime specials! I had the kebab, he had the half roast chicken. Hot, well presented and plentiful. Lovely lunch."</p>
+                    <div class="review-author">Deb L</div>
+                    <div class="review-source">Google Reviews</div>
+                </div>
+                <div class="review">
+                    <div class="review-stars">★★★★★</div>
+                    <p class="review-text">"Really good food at very reasonable price. Lovely staff. Great singer at night. We'll definitely come back."</p>
+                    <div class="review-author">Cellie I</div>
+                    <div class="review-source">Google Reviews</div>
+                </div>
+                <div class="review">
+                    <div class="review-stars">★★★★☆</div>
+                    <p class="review-text">"Big choices. Staff very friendly. <span class="en">Bruschetta</span> with tomato cheese and bacon tasty, standard hamburger and nice sausage with chips."</p>
+                    <div class="review-author">Ele F</div>
+                    <div class="review-source">Google Reviews</div>
+                </div>
+                <div class="review">
+                    <div class="review-stars">★★★★★</div>
+                    <p class="review-text">"Chicken from Rotisserie is lovely. Reasonably priced menu. Good service every time we visit."</p>
+                    <div class="review-author">Terry H</div>
+                    <div class="review-source">Google Reviews</div>
+                </div>
+                <div class="review">
+                    <div class="review-stars">★★★★★</div>
+                    <p class="review-text">"Best breakfast I've had in years! Great value. Friendly atmosphere. One of the best breakfasts in Puerto del Carmen."</p>
+                    <div class="review-author">Sarah M</div>
+                    <div class="review-source">TripAdvisor</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ CTA ═══════ -->
+    <section class="cta-section">
+        <div class="cta-bg"></div>
+        <div class="cta-pattern"></div>
+        <div class="cta-inner">
+            <div class="sec-eyebrow reveal" style="justify-content:center;color:var(--yellow);">
+                <span class="line" style="background:var(--yellow);"></span> <span class="en">Hungry?</span><span class="es">¿Hambriento?</span> <span class="line" style="background:var(--yellow);"></span>
+            </div>
+            <h2 class="sec-title reveal rd1" style="color:var(--white);"><span class="en">Come Visit Us in <span style="color:var(--yellow);">Puerto del Carmen</span></span><span class="es">Ven a Visitarnos a <span style="color:var(--yellow);">Puerto del Carmen</span></span></h2>
+            <p class="reveal rd2"><span class="en">Open every day from 9 AM to 11 PM — breakfast, lunch, dinner and drinks. Av. de las Playas, 49.</span><span class="es">Abiertos todos los días de 9 AM a 11 PM — desayunos, mediodía, cenas y bebidas. Av. de las Playas, 49.</span></p>
+            <div class="reveal rd3">
+                <a href="https://goofy-burger.123restaurant.es" target="_blank" class="btn-book">
+                    <span class="en">📞 Book Your Table Now</span><span class="es">📞 Reserva Tu Mesa Ahora</span>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ CONTACT ═══════ -->
+    <section id="contact">
+        <div class="sec-inner">
+            <div class="contact-grid">
+                <div>
+                    <div class="sec-eyebrow reveal"><span class="line"></span> <span class="en">Find Us</span><span class="es">Encuéntranos</span></div>
+                    <h2 class="sec-title reveal rd1"><span class="en">Right on <span style="color:var(--red-primary);">Av. de las Playas</span></span><span class="es">En Plena <span style="color:var(--red-primary);">Av. de las Playas</span></span></h2>
+                    <p class="sec-subtitle reveal rd2"><span class="en">Can't miss us — just look for the giant Mickey Mouse!</span><span class="es">No nos puedes perder — ¡busca al Mickey Mouse gigante!</span></p>
+
+                    <div class="contact-cards">
+                        <div class="c-card reveal">
+                            <div class="c-card-icon">📍</div>
+                            <h3><span class="en">Address</span><span class="es">Dirección</span></h3>
+                            <p>Av. de las Playas, 49<br>35510 Tías, Las Palmas<br>Puerto del Carmen, Lanzarote, Spain</p>
+                        </div>
+                        <div class="c-card reveal rd1">
+                            <div class="c-card-icon">🕐</div>
+                            <h3><span class="en">Opening Hours</span><span class="es">Horario</span></h3>
+                            <p style="color:var(--text);">
+                                <strong><span class="en">Monday — Sunday</span><span class="es">Lunes — Domingo</span></strong><br>
+                                9:00 AM — 11:00 PM
+                            </p>
+                            <p style="margin-top:0.8rem;font-size:0.85rem;color:var(--yellow);">☀️ <span class="en">Open every day — including weekends!</span><span class="es">¡Abiertos todos los días — ¡incluidos fines de semana!</span></p>
+                        </div>
+                        <div class="c-card reveal rd2">
+                            <div class="c-card-icon">🌐</div>
+                            <h3><span class="en">Online</span><span class="es">Online</span></h3>
+                            <p>
+                                <a href="https://goofy-burger.123restaurant.es" target="_blank"><span class="en">Book a Table →</span><span class="es">Reservar →</span></a><br>
+                                <a href="https://www.facebook.com/Goofy-Burger-Lanzarote-1013950398725688/" target="_blank">Facebook →</a>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <div class="c-map reveal rd2">
+                    <iframe
+                        src="https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d3520!2d-13.63!3d28.92!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2zMjjCsDU1JzEyLjAiTiAxM8KwMzcnNDguMCJX!5e0!3m2!1sen!2ses!4v1700000000000!5m2!1sen!2ses"
+                        allowfullscreen="" loading="lazy"
+                        referrerpolicy="no-referrer-when-downgrade">
+                    </iframe>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ═══════ FOOTER ═══════ -->
+    <footer>
+        <div class="ft-main">
+            <div class="ft-brand">
+                <div class="ft-logo">🍔 GOOFY <span>BURGER</span></div>
+                <p><span class="en">The best fun burgers in Puerto del Carmen. Burgers, American food, all-day breakfast and live music — right on Av. de las Playas, Lanzarote.</span><span class="es">Las hamburguesas más divertidas de Puerto del Carmen. Burgers, americana, desayunos todo el día y música en vivo — en plena Av. de las Playas, Lanzarote.</span></p>
+            </div>
+            <div class="ft-col">
+                <h4><span class="en">Navigate</span><span class="es">Navegación</span></h4>
+                <a href="#about"><span class="en">About</span><span class="es">Historia</span></a>
+                <a href="#menu"><span class="en">Menu</span><span class="es">Carta</span></a>
+                <a href="#gallery"><span class="en">Gallery</span><span class="es">Galería</span></a>
+                <a href="#reviews"><span class="en">Reviews</span><span class="es">Opiniones</span></a>
+                <a href="#contact"><span class="en">Contact</span><span class="es">Contacto</span></a>
+            </div>
+            <div class="ft-col">
+                <h4><span class="en">Menu Highlights</span><span class="es">Destacados de la Carta</span></h4>
+                <a href="#menu"><span class="en">Burgers</span><span class="es">Hamburguesas</span></a>
+                <a href="#menu"><span class="en">Breakfast</span><span class="es">Desayunos</span></a>
+                <a href="#menu"><span class="en">Rotisserie Chicken</span><span class="es">Pollo Asado</span></a>
+                <a href="#menu"><span class="en">Kebabs</span><span class="es">Kebabs</span></a>
+                <a href="#menu"><span class="en">Drinks</span><span class="es">Bebidas</span></a>
+            </div>
+            <div class="ft-col">
+                <h4><span class="en">Details</span><span class="es">Detalles</span></h4>
+                <a href="https://goofy-burger.123restaurant.es" target="_blank"><span class="en">Book Online</span><span class="es">Reservar Online</span></a>
+                <a href="https://www.facebook.com/Goofy-Burger-Lanzarote-1013950398725688/" target="_blank">Facebook</a>
+                <a href="https://www.tripadvisor.com/Restaurant_Review-g954043-d27899726-Reviews-Goofy_Burger-Tias_Lanzarote_Canary_Islands.html" target="_blank">TripAdvisor</a>
+            </div>
+        </div>
+        <div class="ft-bottom">
+            <p>&copy; 2026 Goofy Burger Lanzarote. <span class="en">All rights reserved.</span><span class="es">Todos los derechos reservados.</span></p>
+            <div class="ft-socials">
+                <a href="https://www.facebook.com/Goofy-Burger-Lanzarote-1013950398725688/" target="_blank" aria-label="Facebook">📘</a>
+                <a href="https://goofy-burger.123restaurant.es" target="_blank" aria-label="Book">📞</a>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // LOADER
+        window.addEventListener('load', () => {
+            setTimeout(() => document.getElementById('loader').classList.add('hidden'), 800);
+        });
+
+        // CURSOR
+        const cursor = document.getElementById('cursor');
+        if (window.matchMedia('(hover:hover) and (pointer:fine)').matches) {
+            document.addEventListener('mousemove', e => {
+                cursor.style.left = e.clientX + 'px';
+                cursor.style.top = e.clientY + 'px';
+            });
+            document.querySelectorAll('a, button, .menu-item, .g-item, .spec-card').forEach(el => {
+                el.addEventListener('mouseenter', () => cursor.classList.add('hover'));
+                el.addEventListener('mouseleave', () => cursor.classList.remove('hover'));
+            });
+        } else { cursor.style.display = 'none'; }
+
+        // NAV
+        const navbar = document.getElementById('navbar');
+        window.addEventListener('scroll', () => navbar.classList.toggle('scrolled', window.scrollY > 60));
+
+        // PARTICLES
+        const pc = document.getElementById('particles');
+        for (let i = 0; i < 35; i++) {
+            const p = document.createElement('div');
+            p.classList.add('particle', i % 2 === 0 ? 'orange' : 'yellow');
+            p.style.left = Math.random() * 100 + '%';
+            p.style.animationDelay = Math.random() * 7 + 's';
+            p.style.animationDuration = (5 + Math.random() * 5) + 's';
+            const s = (1 + Math.random() * 3) + 'px';
+            p.style.width = s;
+            p.style.height = s;
+            pc.appendChild(p);
+        }
+
+        // COUNTERS
+        function animateCounters() {
+            document.querySelectorAll('[data-count]').forEach(el => {
+                const target = parseFloat(el.dataset.count);
+                const isDecimal = target % 1 !== 0;
+                const dur = 2000, start = performance.now();
+                function tick(now) {
+                    const p = Math.min((now - start) / dur, 1);
+                    const e = 1 - Math.pow(1 - p, 3);
+                    const c = target * e;
+                    el.textContent = isDecimal ? c.toFixed(1) : Math.floor(c).toLocaleString();
+                    if (p < 1) requestAnimationFrame(tick);
+                }
+                requestAnimationFrame(tick);
+            });
+        }
+
+        // REVEAL
+        const ro = new IntersectionObserver(entries => {
+            entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('visible'); });
+        }, { threshold: 0.08, rootMargin: '0px 0px -40px 0px' });
+        document.querySelectorAll('.reveal').forEach(el => ro.observe(el));
+
+        // Trigger counters
+        const cs = new IntersectionObserver(entries => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) { animateCounters(); cs.unobserve(entry.target); }
+            });
+        });
+        const hs = document.querySelector('.hero-stats');
+        if (hs) cs.observe(hs);
+
+        // PARALLAX
+        window.addEventListener('scroll', () => {
+            const img = document.getElementById('parallaxImg');
+            if (img) {
+                const r = img.parentElement.getBoundingClientRect();
+                img.style.transform = `translateY(${r.top * 0.3}px) scale(1.2)`;
+            }
+        });
+
+        // ═══════ LANGUAGE TOGGLE ═══════
+        function setLang(lang) {
+            document.body.className = 'lang-' + lang;
+            document.getElementById('langEn').classList.toggle('active', lang === 'en');
+            document.getElementById('langEs').classList.toggle('active', lang === 'es');
+            document.documentElement.lang = lang;
+            localStorage.setItem('lang', lang);
+        }
+        (function() {
+            const saved = localStorage.getItem('lang');
+            if (saved && (saved === 'en' || saved === 'es')) setLang(saved);
+        })();
+    </script>
+</body>
+</html>
