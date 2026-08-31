@@ -48,10 +48,19 @@ def create_camera(payload: Dict[str, Any] = Body(...)):
     if not cam["name"]:
         raise HTTPException(400, "Falta el nombre")
     # No duplicar el mismo dispositivo-canal aunque el usuario pulse "Añadir"
-    # varias veces. Si ya existe, la actualizamos: así una cámara que se había
-    # añadido con credenciales incorrectas se corrige al reintentar el asistente.
+    # varias veces. Si ya existe con la MISMA vía (RTSP/RTSP o DVRIP/DVRIP), la
+    # actualizamos: así una cámara añadida con credenciales incorrectas se
+    # corrige al reintentar el asistente.
     dup = _find_duplicate(cam)
     if dup:
+        if dup.get("source_type") != cam.get("source_type"):
+            # Misma lente añadida por otra vía (RTSP vs DVRIP): no pisamos la
+            # configuración existente, sólo avisamos de que ya está. Evita que
+            # reintentar por RTSP convierta una cámara DVRIP que ya funcionaba.
+            return JSONResponse(
+                {"camera": dup, "duplicate": True, "updated": False},
+                status_code=200,
+            )
         updated_cam = config.update_camera(dup["id"], dict(payload))
         if updated_cam:
             manager.sync(config.cameras())

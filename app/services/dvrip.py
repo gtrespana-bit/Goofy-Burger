@@ -39,38 +39,136 @@ except Exception as exc:  # pragma: no cover - entorno
     DVRIP_ERROR = str(exc)
 
 
-def _patch_dvrip_login_reply() -> None:
-    """Compatibilidad con cámaras que omiten ``AliveInterval`` en el login.
+def _patch_dvrip_tolerant_decode() -> None:
+    """Hace tolerante el decodificador de la librería `dvrip`.
 
-    Algunas cámaras iCSee/XMEye responden al login **sin** el campo
-    ``AliveInterval`` (intervalo de keep-alive). La librería `dvrip` lo declara
-    como obligatorio y lanza ``DVRIPDecodeError: no member 'AliveInterval'``;
-    como el login nunca termina, la cámara no abre y el worker entra en un
-    bucle de reconexión sin fin (spam de errores + carga continua).
+    La librería `dvrip` declara un esquema **estricto** para los mensajes y
+    falla con ``DVRIPDecodeError: no member 'X'`` si el dispositivo omite
+    cualquier campo obligatorio. Las cámaras iCSee/XMEye responden al login
+    con un subconjunto (muchas veces sólo ``Ret`` y ``SessionID``), así que el
+    login nunca completa, la cámara no abre y el worker entra en un bucle de
+    reconexión sin fin (spam de errores + carga continua). Lo mismo ocurre con
+    ``SystemInfo``/``ActivityInfo`` (el `probe`) y con el claim de monitor.
 
-    Inyectamos un valor por defecto en la respuesta antes de decodificarla,
-    con lo que el login completa y el resto de campos (canales, vistas…) se
-    leen con normalidad.
+    Sustituimos ``Object.json_to`` (que heredan **todos** los tipos de
+    mensaje) por un decodificador tolerante que:
+
+    - normaliza las claves (algunas cámaras mandan ``DeviceType`` y el esquema
+      declara ``DeviceType `` con un espacio final),
+    - rellena los miembros ausentes o inválidos con un valor por defecto seguro
+      (``0`` / ``""`` / ``False`` / ``[]`` / ``Status.OK`` / ``Session(0)``),
+    - decodifica de forma recursiva los objetos anidados (``SystemInfo``,
+      ``ActivityInfo``…) usando el decodificador ya tolerante,
+    - ignora los campos extra que envíe el dispositivo.
+
+    El codificador (``for_json``) no se toca: las peticiones salientes siguen
+    siendo exactamente las que espera la cámara.
     """
     try:
-        from dvrip import login as _dvrip_login
-
-        _orig_json_to = _dvrip_login.ClientLoginReply.json_to.__func__
-
-        @classmethod
-        def _json_to_tolerant(cls, datum):
-            if isinstance(datum, dict) and "AliveInterval" not in datum:
-                datum = dict(datum)
-                datum["AliveInterval"] = 30  # segundos de keep-alive
-            return _orig_json_to(cls, datum)
-
-        _dvrip_login.ClientLoginReply.json_to = _json_to_tolerant
+        from dvrip import typing as _t
+        from dvrip.message import Session, Status
+        from typing import (
+            Union,
+            get_args as _get_args,
+            get_origin as _get_origin,
+            get_type_hints,
+        )
     except Exception:  # pragma: no cover - librería con otra forma interna
-        pass
+        return
+
+    try:
+        _orig_json_to = _t.Object.json_to.__func__
+    except Exception:  # pragma: no cover
+        return
+
+    _hints_cache: Dict[type, Dict[str, Any]] = {}
+
+    def _hints(cls: type) -> Dict[str, Any]:
+        try:
+            return _hints_cache.setdefault(cls, get_type_hints(cls))
+        except Exception:  # pragma: no cover
+            return {}
+
+    def _object_type(ann: Any) -> Any:
+        """Tipo `Object` al que apunta una anotación (o None si es escalar)."""
+        if ann is None:
+            return None
+        origin = _get_origin(ann)
+        if origin in (_t.member, _t.optionalmember, _t.absentmember):
+            return _object_type(_get_args(ann)[0])
+        if origin is list:
+            return _object_type(_get_args(ann)[0])
+        if origin is Union:
+            args = [a for a in _get_args(ann) if a is not type(None)]
+            return _object_type(args[0]) if args else None
+        if isinstance(ann, type) and issubclass(ann, _t.Object):
+            return ann
+        return None
+
+    def _member_default(mname: str, m) -> Any:
+        """Valor seguro para un miembro ausente o inválido."""
+        if isinstance(m, (_t.absentmember, _t.optionalmember)):
+            return NotImplemented
+        if isinstance(m, _t.fixedmember):
+            return m.default
+        if mname == "status":
+            return Status.OK
+        if mname == "session":
+            return Session(0)
+        for candidate in (0, "", False, []):
+            try:
+                return m.json_to(candidate)
+            except Exception:
+                continue
+        return None
+
+    def _decode_member(mname: str, m, raw: Any, hints: Dict[str, Any]) -> Any:
+        """Decodifica un valor; para objetos anidados usa el decoder tolerante."""
+        target = _object_type(hints.get(mname))
+        if target is not None:
+            if isinstance(raw, list):
+                return [target.json_to(item) for item in raw]
+            return target.json_to(raw)
+        return m.json_to(raw)
+
+    @classmethod
+    def _tolerant_json_to(cls, datum: object):
+        if not isinstance(datum, dict):
+            return _orig_json_to(cls, datum)
+        working: Dict[str, Any] = {str(k).strip(): v for k, v in datum.items()}
+        hints = _hints(cls)
+        values: Dict[str, Any] = {}
+        for mname in cls._members_:
+            m = getattr(cls, mname)
+            key = str(getattr(m, "key", mname) or mname).strip()
+            if isinstance(m, _t.fixedmember):
+                working.pop(key, None)
+                values[mname] = m.default
+                continue
+            if key not in working:
+                values[mname] = _member_default(mname, m)
+                continue
+            raw = working.pop(key)
+            try:
+                values[mname] = _decode_member(mname, m, raw, hints)
+            except Exception:
+                values[mname] = _member_default(mname, m)
+        # Los campos que sobren (extra members) se ignoran: no llamamos a _end_.
+        obj = object.__new__(cls)
+        container = object.__new__(cls._container_)
+        for mname, val in values.items():
+            try:
+                setattr(container, mname, val)
+            except Exception:  # pragma: no cover
+                pass
+        obj._values_ = container
+        return obj
+
+    _t.Object.json_to = _tolerant_json_to
 
 
 if DVRIP_AVAILABLE:
-    _patch_dvrip_login_reply()
+    _patch_dvrip_tolerant_decode()
 
 
 # `import dvrip` se ejecutaba en CADA petición de /system/info y /diagnostics.

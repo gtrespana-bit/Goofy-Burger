@@ -219,6 +219,17 @@ def _clean_camera_url(url: str) -> str:
         return url
 
 
+def _bare_host(host: str) -> str:
+    """Host sin puerto ni decoración (``host``, ``host:34567`` -> ``host``)."""
+    host = (host or "").strip().lower()
+    if not host:
+        return ""
+    try:
+        return (urlsplit("//" + host).hostname or "").strip().lower()
+    except Exception:
+        return host
+
+
 def camera_source_key(cam: Dict[str, Any]) -> Tuple:
     """Clave del dispositivo-canal real de una cámara.
 
@@ -235,12 +246,12 @@ def camera_source_key(cam: Dict[str, Any]) -> Tuple:
     st = cam.get("source_type") or "rtsp"
     if st == "dvrip":
         dv = cam.get("dvrip") or {}
-        host = str(dv.get("host", "")).strip().lower()
+        host = _bare_host(str(dv.get("host", "") or ""))
         channel = int(dv.get("channel", -1) or -1)  # 0-based (0 = primera lente)
         return ("lens", host, channel)
 
     url = cam.get("url") or ""
-    host = (urlsplit(url).hostname or "").strip().lower()
+    host = _bare_host(urlsplit(url).hostname or "")
     if not host:
         return ("url", "", _clean_camera_url(url))
 
