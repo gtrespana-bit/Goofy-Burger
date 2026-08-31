@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Vigía Pro · Videovigilancia inteligente</title>
 <link rel="icon" href="/favicon.png" type="image/png" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0d1117" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/favicon.png" />
 <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -28,6 +33,7 @@
 
 <nav class="tabs" id="tabs">
   <button class="tab active" data-view="dashboard">Directo</button>
+  <button class="tab" data-view="multiview">Muro</button>
   <button class="tab" data-view="events">Eventos <span class="pill" id="events-pill"></span></button>
   <button class="tab" data-view="recordings">Grabaciones</button>
   <button class="tab" data-view="settings">Ajustes</button>
@@ -49,5 +55,13 @@
 <div class="toasts" id="toasts"></div>
 
 <script src="/app.js"></script>
+<script>
+  // PWA: app instalable + caché de la interfaz (sin tocar los streams en vivo)
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/service-worker.js').catch(() => {});
+    });
+  }
+</script>
 </body>
 </html>

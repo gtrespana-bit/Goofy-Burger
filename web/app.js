@@ -80,6 +80,7 @@ const state = {
   info: {},
   filters: { recCamera: '', recDate: '', recKind: '', evCamera: '', evLabel: '', evUnack: false },
   lastEventTs: null,
+  multiview: { layout: 'auto', order: JSON.parse(localStorage.getItem('vigia-multiview-order') || '[]') },
 };
 
 /* ------------------------------------------------------------------ */
@@ -258,6 +259,7 @@ function renderTopbar() {
 async function render() {
   const view = state.view;
   if (view === 'dashboard') return await renderDashboard();
+  if (view === 'multiview') return await renderMultiview();
   if (view === 'camera') return await renderCamera();
   if (view === 'events') return await renderEvents();
   if (view === 'recordings') return await renderRecordings();
@@ -417,6 +419,78 @@ function camCard(cam) {
       <button class="btn sm" data-act="restart">Reiniciar</button>
     </div>
   </div>`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Muro multi-vista                                                    */
+/* ------------------------------------------------------------------ */
+async function renderMultiview() {
+  const view = $('#view');
+  const mv = state.multiview;
+  const cams = state.cameras.slice().sort((a,b) => (a.order||0)-(b.order||0));
+  const ordered = mv.order.length ? mv.order.map(id => cams.find(c => c.id === id)).filter(Boolean) : cams;
+  const rest = cams.filter(c => !ordered.includes(c));
+  const list = ordered.concat(rest);
+  if (!list.length) {
+    view.innerHTML = `<div class="panel empty"><span class="big">🤖</span><p>No hay cámaras para mostrar en el muro.</p>
+      <button class="btn primary" id="mw-add">+ Añadir cámara</button></div>`;
+    const add = $('#mw-add');
+    if (add) add.onclick = () => cameraWizard();
+    return;
+  }
+
+  const layouts = [
+    ['auto', 'Auto'], ['1x1', '1×1'], ['2x2', '2×2'], ['3x3', '3×3'], ['4x4', '4×4'],
+  ];
+  const cols = mv.layout === '1x1' ? 1 : mv.layout === '2x2' ? 2 : mv.layout === '3x3' ? 3 : mv.layout === '4x4' ? 4 :
+    Math.min(4, Math.ceil(Math.sqrt(list.length)) || 1);
+  const rows = Math.ceil(list.length / cols);
+
+  view.innerHTML = `
+  <div class="panel" style="padding:10px 12px;margin-bottom:12px">
+    <div class="spread">
+      <div class="row" id="mw-layout">
+        ${layouts.map(([v, label]) => `<button class="btn sm ${mv.layout === v ? 'primary' : ''}" data-layout="${v}">${label}</button>`).join('')}
+      </div>
+      <div class="row">
+        <span class="muted">${list.length} cámara(s)</span>
+        <button class="btn sm" id="mw-full">⛶ Pantalla completa</button>
+      </div>
+    </div>
+  </div>
+  <div class="mw-grid" id="mw-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr)">
+    ${list.map((cam, i) => `
+      <div class="mw-cell" data-cam="${cam.id}" data-idx="${i}">
+        <div class="mw-feed"><img src="/api/stream/${cam.id}/live.mjpg" alt="${esc(cam.name)}" loading="lazy"></div>
+        <div class="mw-top">
+          <span class="badge state ${cam.health?.state || 'stopped'}">${stateLabel(cam.health?.state || 'stopped')}</span>
+          ${cam.health?.recording ? '<span class="badge rec">● REC</span>' : ''}
+        </div>
+        <div class="mw-name">${esc(cam.name)}</div>
+        <div class="mw-actions">
+          <button class="btn sm ghost" data-act="open" title="Abrir">⤢</button>
+          <button class="btn sm ghost" data-act="snap" title="Instantánea">📷</button>
+        </div>
+      </div>`).join('')}
+  </div>`;
+
+  $$('#mw-layout [data-layout]').forEach(b => b.onclick = () => {
+    mv.layout = b.dataset.layout;
+    renderMultiview();
+  });
+  const fullBtn = $('#mw-full');
+  if (fullBtn) fullBtn.onclick = () => {
+    openModal('Muro · Pantalla completa', `<div id="mw-modal" class="mw-grid" style="grid-template-columns:repeat(${cols},1fr);grid-template-rows:repeat(${rows},1fr);grid-auto-rows:1fr;height:78vh">
+      ${list.map(cam => `<div class="mw-cell"><div class="mw-feed"><img src="/api/stream/${cam.id}/live.mjpg" alt="${esc(cam.name)}"></div><div class="mw-name">${esc(cam.name)}</div></div>`).join('')}
+    </div>`, { wide: true });
+  };
+  $$('[data-cam]', '#mw-grid').forEach(cell => {
+    const id = cell.dataset.cam;
+    cell.querySelector('[data-act="open"]').onclick = () => { location.hash = '#/camera/' + id; };
+    cell.querySelector('[data-act="snap"]').onclick = () => {
+      openModal('Instantánea', `<img src="/api/stream/${id}/snapshot.jpg?force=true&t=${Date.now()}" style="width:100%;border-radius:10px">`, { wide: true });
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -905,6 +979,7 @@ async function checkNewEvents() {
 /* ------------------------------------------------------------------ */
 async function renderRecordings() {
   const f = state.filters;
+  if (!f.recMode) f.recMode = 'timeline';
   const qs = new URLSearchParams({ limit: 400 });
   if (f.recCamera) qs.set('camera_id', f.recCamera);
   if (f.recDate) qs.set('date', f.recDate);
@@ -913,6 +988,7 @@ async function renderRecordings() {
   state.recordings = data.items || [];
   const cal = await api('/recordings/calendar?days=31' + (f.recCamera ? `&camera_id=${f.recCamera}` : ''));
   const st = data.storage;
+  const day = f.recDate || todayStr();
 
   $('#view').innerHTML = `
   <div class="panel">
@@ -921,13 +997,17 @@ async function renderRecordings() {
         <select id="rec-cam"><option value="">Todas las cámaras</option>
           ${state.cameras.map(c => `<option value="${c.id}" ${f.recCamera === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
         </select>
-        <input type="date" id="rec-date" value="${f.recDate}" style="width:auto">
-        <select id="rec-kind" style="width:auto">
+        <input type="date" id="rec-date" value="${day}" style="width:auto">
+        ${f.recMode === 'list' ? `<select id="rec-kind" style="width:auto">
           <option value="">Todo</option>
           <option value="segment" ${f.recKind === 'segment' ? 'selected' : ''}>Grabación continua</option>
           <option value="clip" ${f.recKind === 'clip' ? 'selected' : ''}>Clips por movimiento</option>
-        </select>
-        ${f.recDate || f.recCamera || f.recKind ? '<button class="btn sm ghost" id="rec-reset">Quitar filtros</button>' : ''}
+        </select>` : ''}
+        <div class="row" style="gap:4px">
+          <button class="btn sm ${f.recMode === 'timeline' ? 'primary' : ''}" id="rec-mode-tl">📅 Timeline</button>
+          <button class="btn sm ${f.recMode === 'list' ? 'primary' : ''}" id="rec-mode-list">📃 Lista</button>
+        </div>
+        ${f.recCamera || f.recKind ? '<button class="btn sm ghost" id="rec-reset">Quitar filtros</button>' : ''}
       </div>
       <div class="row">
         <span class="muted">${data.total} ficheros · ${fmtBytes(st.recordings.bytes + st.clips.bytes)} · libre ${fmtBytes(st.disk.free)}</span>
@@ -942,18 +1022,18 @@ async function renderRecordings() {
     </div>
   </div>
 
-  <div class="list" style="margin-top:14px">
-    ${state.recordings.length ? state.recordings.map(recItem).join('')
-      : '<div class="empty"><span class="big">📼</span>No hay grabaciones para este filtro</div>'}
-  </div>`;
+  <div id="rec-content" style="margin-top:14px"></div>`;
 
-  $('#rec-cam').onchange = e => { state.filters.recCamera = e.target.value; renderRecordings(); };
-  $('#rec-date').onchange = e => { state.filters.recDate = e.target.value; renderRecordings(); };
-  $('#rec-kind').onchange = e => { state.filters.recKind = e.target.value; renderRecordings(); };
+  $('#rec-mode-tl').onclick = () => { f.recMode = 'timeline'; renderRecordings(); };
+  $('#rec-mode-list').onclick = () => { f.recMode = 'list'; renderRecordings(); };
+  $('#rec-cam').onchange = e => { f.recCamera = e.target.value; renderRecordings(); };
+  $('#rec-date').onchange = e => { f.recDate = e.target.value; renderRecordings(); };
+  const kind = $('#rec-kind');
+  if (kind) kind.onchange = e => { f.recKind = e.target.value; renderRecordings(); };
   const reset = $('#rec-reset');
-  if (reset) reset.onclick = () => { state.filters.recCamera = ''; state.filters.recDate = ''; state.filters.recKind = ''; renderRecordings(); };
+  if (reset) reset.onclick = () => { f.recCamera = ''; f.recDate = ''; f.recKind = ''; renderRecordings(); };
   $$('[data-date]').forEach(b => b.onclick = () => {
-    state.filters.recDate = state.filters.recDate === b.dataset.date ? '' : b.dataset.date;
+    f.recDate = f.recDate === b.dataset.date ? '' : b.dataset.date;
     renderRecordings();
   });
   $('#rec-prune').onclick = () => confirmModal('Limpiar grabaciones antiguas',
@@ -962,7 +1042,58 @@ async function renderRecordings() {
       toast(`Liberados ${fmtBytes(r.bytes)} (${r.files} ficheros)`);
       renderRecordings();
     });
-  $$('[data-rec]').forEach(el => el.onclick = () => videoModal(el.dataset.rec, el.dataset.name));
+
+  const content = $('#rec-content');
+  if (f.recMode === 'timeline') {
+    const tl = await api(`/recordings/timeline?date=${encodeURIComponent(day)}${f.recCamera ? `&camera_id=${f.recCamera}` : ''}`);
+    content.innerHTML = timelinePanel(tl, day);
+    wireTimeline();
+  } else {
+    content.innerHTML = `<div class="list">
+      ${state.recordings.length ? state.recordings.map(recItem).join('')
+        : '<div class="empty"><span class="big">📼</span>No hay grabaciones para este filtro</div>'}</div>`;
+    $$('[data-rec]').forEach(el => el.onclick = () => videoModal(el.dataset.rec, el.dataset.name));
+  }
+}
+
+function timelinePanel(tl, day) {
+  const items = tl.items || [];
+  const events = tl.events || [];
+  const hours = [];
+  for (let h = 0; h < 24; h++) hours.push(h);
+  const itemBars = items.map((r, i) => {
+    const x0 = ((r.start_ts - new Date(day + 'T00:00:00').getTime()) / 3600000) / 24 * 100;
+    const x1 = Math.max(x0 + 0.4, ((r.end_ts - new Date(day + 'T00:00:00').getTime()) / 3600000) / 24 * 100);
+    return `<div class="tl-item ${r.kind === 'clip' ? 'clip' : 'seg'}" data-rec="${esc(r.path)}" data-name="${esc(r.name)}" title="${esc(r.camera_name)} · ${fmtTime(r.start)} · ${fmtDur(r.duration)} · ${fmtBytes(r.size)}" style="left:${x0}%;width:${Math.min(100 - x0, x1 - x0)}%">
+      ${r.kind === 'clip' ? '◆' : ''} ${esc(r.camera_name)} ${fmtDur(r.duration)}</div>`;
+  }).join('');
+  const eventDots = events.map(ev => {
+    const ts = new Date((ev.ts || '').replace(' ', 'T'));
+    const pct = ((ts - new Date(day + 'T00:00:00').getTime()) / 3600000) / 24 * 100;
+    return `<button class="tl-event" data-event="${ev.id}" title="${esc(ev.camera_name)} · ${esc(ev.label)} · ${fmtTime(ev.ts)}" style="left:${pct}%">${esc(ev.label || 'e')}</button>`;
+  }).join('');
+  const empty = !items.length && !events.length;
+  return `
+  <div class="panel">
+    <div class="spread">
+      <h3>📅 Timeline ${esc(day)}</h3>
+      <div class="row"><span class="muted">${items.length} grabaciones · ${events.length} eventos</span></div>
+    </div>
+    <div class="tl">
+      <div class="tl-ticks">${hours.map(h => `<span style="left:${h/24*100}%">${String(h).padStart(2,'0')}</span>`).join('')}</div>
+      <div class="tl-track">${empty ? '<div class="muted" style="padding:30px;text-align:center">Sin actividad este día.</div>' : itemBars + eventDots}</div>
+      <div class="tl-legend">
+        <span><i class="lg seg"></i> Continua</span>
+        <span><i class="lg clip"></i> Clip movimiento</span>
+        <span><i class="lg ev"></i> Evento</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+function wireTimeline() {
+  $$('.tl-item').forEach(el => el.onclick = () => videoModal(el.dataset.rec, el.dataset.name));
+  $$('.tl-event').forEach(el => el.onclick = () => eventModal(el.dataset.event));
 }
 
 function recItem(r) {

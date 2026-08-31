@@ -107,7 +107,31 @@ def list_recordings(
     }
 
 
-@router.get("/calendar")
+@router.get("/timeline")
+def timeline(camera_id: Optional[str] = None, date: Optional[str] = None):
+    """Línea de tiempo de un día: grabaciones (continua/clips) + eventos."""
+    from datetime import datetime
+
+    if not date:
+        date = datetime.utcnow().strftime("%Y-%m-%d")
+    try:
+        datetime.strptime(date, "%Y-%m-%d")
+    except Exception:
+        raise HTTPException(400, "Fecha inválida (YYYY-MM-DD)")
+    items = collect(camera_id)
+    items = [i for i in items if i["start"][:10] == date]
+    since = f"{date}T00:00:00Z"
+    until = f"{date}T23:59:59Z"
+    from .. import events_store
+    events = events_store.query(since=since, until=until, limit=1000)
+    if camera_id:
+        events = [e for e in events if e.get("camera_id") == camera_id]
+    return {
+        "date": date,
+        "items": items,
+        "events": events,
+        "storage": storage_stats(),
+    }
 def calendar(camera_id: Optional[str] = None, days: int = Query(31, ge=1, le=365)):
     """Resumen por día para pintar el calendario/línea de tiempo."""
     items = collect(camera_id)
