@@ -119,6 +119,40 @@ URLs típicas:
 
 Si la cámara pide usuario, ponlo en el formulario y Vigía lo inyecta en la URL.
 
+### 🔧 Mi cámara iCSee/XMEye no aparece / no me deja entrar
+
+Lo más habitual con estas cámaras (chip XiongMai) no es la URL, sino **quién
+tiene permiso para ver el stream**. La cuenta con la que entras en la **app
+iCSee** (p. ej. `Ruben`) y en la **web** (`http://IP/`) **no es la misma** que
+usa el **RTSP**. El RTSP normalmente usa la cuenta **`admin` sin contraseña**
+(o la contraseña que le pongas a `admin`), no la del usuario normal.
+
+Pasos:
+
+1. En el asistente «Añadir cámara» escribe la IP de tu cámara en el campo
+   **«IP de la cámara»** y pulsa **🔧 Diagnosticar iCSee**. Vigía comprobará
+   los puertos (RTSP 554, ONVIF 8899, web 80…) y sondeará todas las variantes
+   RTSP con varias cuentas, y te dirá exactamente por qué no hay imagen.
+2. Si el diagnóstico dice que **RTSP (554) está cerrado**: entra por la web
+   (`http://IP/`) o en la app iCSee → ajustes del dispositivo y **activa RTSP**
+   (puerto 554); reinicia la cámara y vuelve a diagnosticar.
+3. Si el RTSP responde con **`admin` sin contraseña** pero no con tu usuario:
+   pega una URL RTSP que lleve `user=admin&password=` en la propia ruta:
+   `rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream`
+   (la `password` se deja vacía; si le pusiste contraseña a `admin`, ponla).
+4. Pega la URL en **«URL RTSP»** y pulsa **Probar conexión** para ver una foto
+   real antes de guardar.
+
+Una URL iCSee/XMEye válida tiene este aspecto (credenciales **dentro de la
+ruta**, y `channel=N` por cada lente si es multi-lente):
+
+```text
+rtsp://192.168.0.108:554/user=admin&password=&channel=1&stream=0.sdp?real_stream
+```
+
+> Vigía, al conectar, detecta automáticamente estas URLs con credenciales en la
+> ruta y respeta la cuenta `admin` (no la pisa con el usuario de la app).
+
 ## Dónde se guarda todo
 
 ```

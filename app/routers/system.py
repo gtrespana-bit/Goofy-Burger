@@ -110,6 +110,25 @@ def discover(req: DiscoverRequest):
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
+@router.post("/diagnose")
+def diagnose(req: DiscoverRequest):
+    """Diagnóstico de una IP concreta (pensado para cámaras iCSee/XMEye).
+
+    Comprueba puertos, sondea todas las variantes RTSP (incluida la de
+    'admin' sin contraseña) y devuelve pistas sobre por qué no hay imagen.
+    """
+    if not req.target:
+        raise HTTPException(400, "Indica la IP de la cámara en 'target'")
+    try:
+        return discovery.diagnose_camera(
+            req.target, req.username, req.password,
+            timeout=max(0.8, req.timeout / 3),
+            rtsp_timeout=max(1.2, req.timeout / 3),
+        )
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+
+
 @router.get("/usb")
 def usb_devices():
     return {"devices": list_usb_devices()}

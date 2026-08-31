@@ -1105,6 +1105,10 @@ function cameraWizard() {
         <input id="w-dis-user" placeholder="usuario" style="width:auto">
         <input id="w-dis-pass" type="password" placeholder="contraseña" style="width:auto">
       </div>
+      <div class="row" style="margin-top:8px;gap:6px">
+        <input id="w-dis-ip" placeholder="IP de la cámara (p. ej. 192.168.0.108)" style="flex:1">
+        <button class="btn sm primary" id="w-dis-diag">🔧 Diagnosticar iCSee</button>
+      </div>
       <div id="w-dis-results" class="list" style="margin-top:10px"></div>
     </div>
 
@@ -1319,6 +1323,55 @@ function cameraWizard() {
   }
   $('#w-dis-onvif').onclick = () => discover('onvif');
   $('#w-dis-scan').onclick = () => discover('scan');
+
+  // ---- diagnóstico de una IP (iCSee / XMEye) ----
+  async function diagnose() {
+    const box = $('#w-dis-results');
+    const ip = $('#w-dis-ip').value.trim();
+    if (!ip) { toast('Escribe la IP de la cámara', 'warn'); return; }
+    box.innerHTML = '<div class="muted"><span class="spinner"></span> Analizando ' + esc(ip) + '…</div>';
+    try {
+      const r = await api('/system/diagnose', {
+        method: 'POST',
+        body: { mode: 'diagnose', target: ip, username: $('#w-dis-user').value, password: $('#w-dis-pass').value },
+      });
+      const ports = (r.ports || []);
+      const openPorts = ports.filter(p => p.open);
+      let html = '<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">' +
+        '<div class="grow"><div class="title">🔧 Diagnóstico de ' + esc(ip) + '</div>' +
+        '<div class="meta">' + (openPorts.length
+          ? openPorts.map(p => `puerto <b>${p.port}</b> ${p.label ? '· ' + esc(p.label) : ''}`).join(' · ')
+          : 'ningún puerto abierto') + '</div></div></div>';
+      const urls = (r.rtsp || []);
+      if (urls.length) {
+        html += `<div class="item"><div class="grow"><div class="title">✅ RTSP disponible (${urls.length})</div>` +
+          urls.map(u => `<div class="meta" style="word-break:break-all"><button class="btn sm" data-url="${esc(u)}">Usar · ${esc(u)}</button></div>`).join('') +
+          '</div></div>';
+      } else {
+        html += '<div class="item"><div class="grow"><div class="title" style="color:#ff6b6b">❌ RTSP sin respuesta</div></div></div>';
+      }
+      (r.hints || []).forEach(h => { html += `<div class="item"><div class="grow"><div class="meta">💡 ${esc(h)}</div></div></div>`; });
+      box.innerHTML = html;
+      $$('[data-url]', box).forEach(b => b.onclick = () => {
+        $('#w-url').value = b.dataset.url;
+        if (isIcseeUrl(b.dataset.url)) {
+          const info = icseeInfo(b.dataset.url);
+          $('#w-onvif').checked = true;
+          $('#w-onvif-box').style.display = '';
+          $('#w-ov-host').value = info.host;
+          $('#w-ov-port').value = 8899;
+          toast('URL RTSP puesta en el formulario');
+        } else {
+          $('#w-url').value = b.dataset.url;
+          toast('URL puesta en el formulario');
+        }
+      });
+    } catch (e) {
+      box.innerHTML = `<div class="muted">Error: ${esc(e.message)}</div>`;
+    }
+  }
+  $('#w-dis-diag').onclick = diagnose;
+  $('#w-dis-ip').addEventListener('keydown', e => { if (e.key === 'Enter') diagnose(); });
 
   // ---- prueba ----
   $('#w-test').onclick = async () => {

@@ -29,8 +29,14 @@ def iso(dt: datetime) -> str:
 # RTSP helpers
 # --------------------------------------------------------------------------
 # Rutas XMEye/iCSee: credenciales dentro de la ruta (user=..&password=..).
-_XMEYE_PATH_RE = re.compile(r"(user=)[^&/?\s]*(&password=)[^&/?\s]*", re.I)
-_XMEYE_UNDERSCORE_RE = re.compile(r"(user=)[^_?\s]*(_password=)[^_?\s]*", re.I)
+# Algunos firmwares XiongMai usan `passwd=` en vez de `password=`, así que
+# cubrimos ambas variantes (y las que van con guion bajo).
+_XMEYE_PATH_RE = re.compile(
+    r"(user=)[^&/?\s]*&(?:password|passwd)=[^&/?\s]*", re.I
+)
+_XMEYE_UNDERSCORE_RE = re.compile(
+    r"(user=)[^_?\s]*(?:_password|_passwd)=[^_?\s]*", re.I
+)
 
 
 def with_credentials(url: str, username: str = "", password: str = "") -> str:
