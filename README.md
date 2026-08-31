@@ -29,7 +29,7 @@ las grabaciones viven en `%APPDATA%\Vigia`, fuera del programa).
 build\build_windows.bat
 ```
 
-Esto genera `dist\Vigia-Setup-0.1.0.exe` (instalador) y `dist\Vigia\Vigia.exe`
+Esto genera `dist\Vigia-Setup-1.0.1.exe` (instalador) y `dist\Vigia\Vigia.exe`
 (carpeta portátil). Resta instalar [Inno Setup 6](https://jrsoftware.org/isinfo.php)
 (o 7); el script lo encuentra solo. Si lo instalaste en una ruta
 personalizada: `set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`.
@@ -233,6 +233,31 @@ la ubicación con la variable `VIGIA_DATA_DIR` y moverla desde
 **Ajustes → Almacenamiento → Carpeta de grabaciones**.
 
 ## Diagnóstico de errores
+
+Si la interfaz normal no responde, abre directamente la página de
+diagnóstico del servidor:
+
+```
+http://127.0.0.1:8000/__vigia_debug
+```
+
+No usa las pestañas ni `app.js`: muestra si el backend responde, la versión
+servida, el número de cámaras y permite ver al instante si el navegador está
+sirviendo una **interfaz vieja/cacheada**.
+
+En Windows, para probar **sin crear el `.exe`** y poder usar F12:
+
+```bat
+build\run_dev_web.bat
+```
+
+Eso abre la interfaz en el navegador en `http://127.0.0.1:8001/` con una
+carpeta de datos vacía (`devdata`), sin tocar tu configuración real. Para
+abrir con tus cámaras, ejecuta a mano:
+
+```bat
+.venv\Scripts\activate && python vigia.py --browser --port 8001
+```
 
 Pulsa el botón **🩺** de la barra superior (o **Ajustes → 🩺 Diagnóstico y errores**).
 Muestra, en una sola pantalla:

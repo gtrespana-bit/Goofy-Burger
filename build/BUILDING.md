@@ -107,6 +107,38 @@ El instalador:
   `2026-08-31.1`) y el service-worker se actualiza solo en caché nueva
   (`vigia-pro-v5`), invalidando las versiones viejas.
 
+## Probar / depurar sin crear el `.exe` (Windows)
+
+Para ver la interfaz en el navegador y descargar depurar con F12, con un
+solo clic:
+
+```bat
+build\run_dev_web.bat
+```
+
+Ese script crea `.venv` si hace falta, instala dependencias y arranca:
+
+```
+http://127.0.0.1:8001/
+```
+
+Además abre una página de **diagnóstico del servidor** en:
+
+```
+http://127.0.0.1:8001/__vigia_debug
+```
+
+Esa página no usa la interfaz normal ni las pestañas; muestra si el backend
+responde, la versión servida, el número de cámaras y qué `app.js` está
+sirviendo el navegador. Es la forma más rápida de ver si el problema es una
+caché/interfaz vieja o el backend.
+
+También puedes arrancarlo a mano:
+
+```bat
+.venv\Scripts\activate && python vigia.py --browser --port 8001
+```
+
 ## macOS / Linux
 
 Puedes usar PyInstaller igualmente (`pyinstaller --noconfirm build/vigia.spec`

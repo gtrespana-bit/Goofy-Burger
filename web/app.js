@@ -404,6 +404,8 @@ function showLogin() {
 
 async function boot() {
   console.info(`Vigía UI ${UI_VERSION}`);
+  document.title = `Vigía Pro · UI ${UI_VERSION}`;
+  try { document.documentElement.dataset.uiVersion = UI_VERSION; } catch (e) { /* sin atributos */ }
   setupPwa();
   // Navegación robusta: se vincula antes de la autenticación para que los
   // tabs funcionen aunque algo falle después al cargar los datos.
