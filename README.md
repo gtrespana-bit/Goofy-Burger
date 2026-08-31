@@ -99,6 +99,11 @@ URLs típicas:
 > la ruta** (`user=…&password=…`), no en `rtsp://usuario:contraseña@…`. La cuenta
 > RTSP suele ser `admin` (a veces con contraseña vacía), distinta de la cuenta
 > con la que entras en la app iCSee. Vigía las detecta y sondea automáticamente.
+>
+> Las cámaras **multi-lente** (p. ej. "2 en 1" o "3 en 1") exponen cada lente
+> como un **canal**: `channel=1`, `channel=2`, `channel=3`… Vigía sondea los
+> canales 1–4 y puedes añadir cada lente como una **cámara independiente** (con
+> su propio directo, detección y grabación), que es como se ven en el panel.
 
 Si la cámara pide usuario, ponlo en el formulario y Vigía lo inyecta en la URL.
 

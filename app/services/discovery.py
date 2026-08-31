@@ -55,15 +55,20 @@ COMMON_RTSP_PATHS = [
 
 # Rutas RTSP de cámaras XMEye / iCSee (chip XiongMai, HI3516…).
 # Aquí las credenciales van EMBEBIDAS EN LA RUTA, no en el usuario de la URL.
-# {user} y {password} se sustituyen en ``probe_rtsp``.
+# {user}, {password} y {channel} se sustituyen en ``probe_rtsp``.
+# En las cámaras multi-lente (p. ej. "3 en 1"), cada lente es un canal distinto.
 XMEYE_RTSP_PATHS = [
-    "/user={user}&password={password}&channel=1&stream=0.sdp?real_stream",
-    "/user={user}&password={password}&channel=1&stream=1.sdp?real_stream",
-    "/user={user}_password={password}_channel=1_stream=0.sdp?real_stream",
-    "/user={user}_password={password}_channel=1_stream=1.sdp?real_stream",
-    "/user={user}&password={password}&channel=1&stream=0.sdp",
-    "/user={user}_password={password}_channel=1_stream=0.sdp",
+    "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream",
+    "/user={user}&password={password}&channel={channel}&stream=1.sdp?real_stream",
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp?real_stream",
+    "/user={user}_password={password}_channel={channel}_stream=1.sdp?real_stream",
+    "/user={user}&password={password}&channel={channel}&stream=0.sdp",
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp",
 ]
+
+# Canales a sondear en cámaras XMEye/iCSee. La mayoría tienen 1, pero las
+# multi-lente ("2 en 1", "3 en 1"…) llegan a 3 o 4. Sondeamos 1-4 por si acaso.
+XMEYE_CHANNELS = [1, 2, 3, 4]
 
 DEFAULT_PORTS = [554, 8554, 80, 8080, 8000, 8899, 10554]
 
@@ -294,7 +299,7 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
     if username:
         credential_sets.append((username, password))
     if (username or "").lower() != "admin":
-        credential_sets += [("admin", password), ("admin", ""), ("admin", "admin")]
+        credential_sets += [("admin", password), ("admin", "")]
     if not credential_sets:
         credential_sets = [("admin", "")]
 
@@ -302,12 +307,15 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
     for port in ports:
         for path in path_list:
             if "{user}" in path or "{password}" in path:
+                # Rutas XMEye/iCSee: credenciales y canal dentro de la ruta.
+                # Cada canal puede ser un lente distinto (cámaras multi-lente).
                 for u, pw in credential_sets:
-                    try:
-                        filled = path.format(user=u, password=pw)
-                    except (KeyError, ValueError):
-                        continue
-                    urls.append(f"rtsp://{base_host}:{port}{filled}")
+                    for channel in XMEYE_CHANNELS:
+                        try:
+                            filled = path.format(user=u, password=pw, channel=channel)
+                        except (KeyError, ValueError):
+                            continue
+                        urls.append(f"rtsp://{base_host}:{port}{filled}")
             else:
                 urls.append(f"rtsp://{auth}{base_host}:{port}{path}")
 

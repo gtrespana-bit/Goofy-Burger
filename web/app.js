@@ -1113,7 +1113,7 @@ function cameraWizard() {
       <div class="field"><label>Grupo / zona</label><input id="w-group" placeholder="Planta baja"></div>
       <div class="field w-rtsp"><label>URL RTSP (calidad alta, para grabar)</label>
         <input id="w-url" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/101">
-        <span class="hint">Cámaras iCSee/XMEye: <code>rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream</code> (credenciales dentro de la ruta).</span></div>
+        <span class="hint">Cámaras iCSee/XMEye: <code>rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream</code> (credenciales dentro de la ruta). Multi-lente: <code>channel=1</code>, <code>channel=2</code>, <code>channel=3</code>… = cada lente.</span></div>
       <div class="field w-rtsp"><label>URL RTSP secundaria (opcional, para detectar y ver en directo)</label>
         <input id="w-sub" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/102"></div>
       <div class="field w-rtsp"><label>Usuario</label><input id="w-user"></div>
