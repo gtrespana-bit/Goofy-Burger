@@ -362,6 +362,14 @@ class Config:
         self.save()
         return self.snapshot()
 
+    def reset(self) -> Dict[str, Any]:
+        """Restablece toda la configuración a los valores de fábrica."""
+        with self._lock:
+            self._data = default_config()
+            self.ensure_dirs()
+            self.save()
+            return self.snapshot()
+
     # ---------- directorios ----------
     def ensure_dirs(self) -> None:
         storage = self._data.setdefault("storage", {})

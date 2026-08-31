@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, Body, HTTPException
 
 from ..auth import api_tokens, generate_totp_secret, hash_password, hash_token, users, verify_totp
-from ..config import config
+from ..config import clips_dir, config, recordings_dir, snapshots_dir
 from ..services.manager import manager
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -187,6 +187,30 @@ def replace_settings(payload: Dict[str, Any] = Body(...)):
     data = config.replace(payload)
     manager.sync(config.cameras())
     return data
+
+
+@router.post("/factory-reset")
+def factory_reset(payload: Dict[str, Any] = Body(default={})):
+    """Restablece todos los ajustes a los valores de fábrica.
+
+    Opcionalmente borra también grabaciones, clips e instantáneas. Los
+    directorios de datos se dejan creados para que la app siga funcionando.
+    """
+    import shutil
+
+    wipe = bool(payload.get("wipe_recordings"))
+    manager.stop_all()
+    if wipe:
+        for base in (recordings_dir(), clips_dir(), snapshots_dir()):
+            try:
+                if base.exists():
+                    shutil.rmtree(str(base))
+                base.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+    config.reset()
+    manager.sync([])
+    return {"ok": True, "cameras": 0, "auth_enabled": False}
 
 
 @router.post("/notifications/test")

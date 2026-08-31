@@ -725,6 +725,19 @@ async function renderDashboard() {
       await api(`/cameras/${card.dataset.cam}/restart`, { method: 'POST' });
       toast('Cámara reiniciándose');
     };
+    const del = card.querySelector('[data-act="del"]');
+    if (del) del.onclick = e => {
+      e.stopPropagation();
+      const id = card.dataset.cam;
+      const cam = state.cameras.find(c => c.id === id);
+      confirmModal('Eliminar cámara',
+        `Se eliminará "${cam?.name || id}". Las grabaciones existentes se conservan.`,
+        async () => {
+          await api(`/cameras/${id}`, { method: 'DELETE' });
+          toast('Cámara eliminada');
+          refresh(true);
+        });
+    };
   });
 }
 
@@ -762,6 +775,7 @@ function camCard(cam) {
       <button class="btn sm" data-act="snap">Instantánea</button>
       <button class="btn sm" data-act="record">Grabar 60 s</button>
       <button class="btn sm" data-act="restart">Reiniciar</button>
+      <button class="btn sm ghost" data-act="del" title="Eliminar cámara">🗑</button>
     </div>
   </div>`;
 }
@@ -829,7 +843,7 @@ async function renderMultiview() {
       ${list.map(cam => `<div class="mw-cell"><div class="mw-feed"><img src="/api/stream/${cam.id}/live.mjpg" alt="${esc(cam.name)}"></div><div class="mw-name">${esc(cam.name)}</div></div>`).join('')}
     </div>`, { wide: true });
   };
-  $$('[data-cam]', '#mw-grid').forEach(cell => {
+  $$('[data-cam]', $('#mw-grid')).forEach(cell => {
     const id = cell.dataset.cam;
     cell.querySelector('[data-act="open"]').onclick = () => { location.hash = '#/camera/' + id; };
     cell.querySelector('[data-act="snap"]').onclick = () => {
@@ -1901,6 +1915,13 @@ async function renderSettings() {
         <button class="btn" id="sys-export">Exportar configuración</button>
         <button class="btn ghost" id="sys-reload">Recargar del disco</button>
       </div>
+      <div class="divider"></div>
+      <h3>💣 Reinicio de fábrica</h3>
+      <p class="muted">Borra cámaras, usuarios, tokens, notificaciones y todos los ajustes. La carpeta de datos no se borra.</p>
+      <div class="row">
+        <button class="btn danger" id="sys-reset">Restablecer ajustes</button>
+        <button class="btn danger" id="sys-reset-all">Borrar ajustes y grabaciones</button>
+      </div>
     </div>
   </div>`;
 
@@ -1909,6 +1930,9 @@ async function renderSettings() {
   if (secPanel && !canAdmin) secPanel.remove();
   const pushPanel = $('#push-panel');
   if (pushPanel && !canAdmin) pushPanel.remove();
+  if (!canAdmin) {
+    ['#sys-reset', '#sys-reset-all'].forEach(sel => { const b = $(sel); if (b) b.remove(); });
+  }
 
   // --- almacenamiento ---
   $('#st-save').onclick = async () => {
@@ -2192,6 +2216,30 @@ async function renderSettings() {
     a.click();
   };
   $('#sys-reload').onclick = async () => { await api('/settings/reload', { method: 'POST', body: {} }); refresh(true); toast('Configuración recargada'); };
+  $('#sys-reset').onclick = async () => {
+    const ok = confirm('¿Restablecer TODO a los ajustes de fábrica? Se eliminarán cámaras, usuarios, tokens y notificaciones. Las grabaciones se conservarán.');
+    if (!ok) return;
+    if (!confirm('Esta acción no se puede deshacer. ¿Continuar?')) return;
+    try {
+      await api('/settings/factory-reset', { method: 'POST', body: { wipe_recordings: false } });
+      toast('Reinicio de fábrica completado');
+      await refresh(true);
+      location.hash = '#/dashboard';
+      route();
+    } catch (e) { toast(e.message || 'No se pudo restablecer', 'err'); }
+  };
+  $('#sys-reset-all').onclick = async () => {
+    const ok = confirm('¿Borrar TODOS los ajustes y TODAS las grabaciones/clips/instantáneas?');
+    if (!ok) return;
+    if (!confirm('Esta acción es irreversible. ¿Continuar?')) return;
+    try {
+      await api('/settings/factory-reset', { method: 'POST', body: { wipe_recordings: true } });
+      toast('Reinicio de fábrica + datos borrados');
+      await refresh(true);
+      location.hash = '#/dashboard';
+      route();
+    } catch (e) { toast(e.message || 'No se pudo restablecer', 'err'); }
+  };
 }
 
 /* ------------------------------------------------------------------ */
