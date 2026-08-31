@@ -86,14 +86,28 @@ const state = {
 /* Modal                                                               */
 /* ------------------------------------------------------------------ */
 function openModal(title, html, opts = {}) {
-  $('#modal-title').textContent = title;
-  $('#modal-body').innerHTML = html;
-  $('#modal').querySelector('.modal').classList.toggle('wide', !!opts.wide);
-  $('#modal').hidden = false;
-  if (opts.onMount) opts.onMount($('#modal-body'));
-  return $('#modal-body');
+  const modal = $('#modal');
+  const modalTitle = $('#modal-title');
+  const modalBody = $('#modal-body');
+  
+  if (modalTitle) modalTitle.textContent = title;
+  if (modalBody) modalBody.innerHTML = html || '';
+  
+  if (modal) {
+    const modalEl = modal.querySelector('.modal');
+    if (modalEl) modalEl.classList.toggle('wide', !!opts.wide);
+    modal.hidden = false;
+  }
+  
+  if (opts.onMount && modalBody) opts.onMount(modalBody);
+  return modalBody;
 }
-function closeModal() { $('#modal').hidden = true; $('#modal-body').innerHTML = ''; }
+function closeModal() {
+  const modal = $('#modal');
+  const modalBody = $('#modal-body');
+  if (modal) modal.hidden = true;
+  if (modalBody) modalBody.innerHTML = '';
+}
 
 function confirmModal(title, text, onYes) {
   openModal(title, `<p>${esc(text)}</p>
@@ -110,30 +124,67 @@ function confirmModal(title, text, onYes) {
 /* ------------------------------------------------------------------ */
 /* Arranque y navegación                                               */
 /* ------------------------------------------------------------------ */
-async function boot() {
-  $('#modal-close').onclick = closeModal;
-  $('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-
-  $('#btn-add').onclick = () => cameraWizard();
-  $('#btn-refresh').onclick = () => refresh(true);
-  $('#btn-away').onclick = async () => {
-    const away = !state.settings.general?.away;
-    await api('/system/away', { method: 'POST', body: { value: away } });
-    state.settings.general = { ...(state.settings.general || {}), away };
-    renderTopbar();
-    toast(away ? 'Modo fuera de casa activado' : 'Modo en casa');
-  };
-
-  $$('#tabs .tab').forEach(tab => {
-    tab.onclick = () => { location.hash = '#/' + tab.dataset.view; };
+// Configurar el modal IMMEDIATELY para evitar problemas si boot() falla
+(function() {
+  const modal = $('#modal');
+  const modalClose = $('#modal-close');
+  
+  // Asegurarse de que el modal esté oculto al inicio
+  if (modal) {
+    modal.hidden = true;
+    
+    // Configurar event listeners del modal de inmediato
+    if (modalClose) {
+      modalClose.onclick = closeModal;
+    }
+    
+    modal.addEventListener('click', e => { 
+      if (e.target.id === 'modal') closeModal(); 
+    });
+  }
+  
+  document.addEventListener('keydown', e => { 
+    if (e.key === 'Escape') closeModal(); 
   });
-  window.addEventListener('hashchange', route);
+  
+  // Failsafe: ocultar modal después de 500ms por si algo lo hizo visible
+  setTimeout(() => {
+    const m = $('#modal');
+    if (m && !m.hidden && !m.querySelector('.modal-body').innerHTML.trim()) {
+      m.hidden = true;
+    }
+  }, 500);
+})();
 
-  await refresh(true);
-  route();
-  setInterval(() => refresh(false), 5000);
-  setInterval(checkNewEvents, 6000);
+async function boot() {
+  // Los event listeners del modal ya están configurados arriba
+  // No necesitamos configurarlos de nuevo aquí
+  
+  try {
+    $('#btn-add').onclick = () => cameraWizard();
+    $('#btn-refresh').onclick = () => refresh(true);
+    $('#btn-away').onclick = async () => {
+      const away = !state.settings.general?.away;
+      await api('/system/away', { method: 'POST', body: { value: away } });
+      state.settings.general = { ...(state.settings.general || {}), away };
+      renderTopbar();
+      toast(away ? 'Modo fuera de casa activado' : 'Modo en casa');
+    };
+
+    $$('#tabs .tab').forEach(tab => {
+      tab.onclick = () => { location.hash = '#/' + tab.dataset.view; };
+    });
+    window.addEventListener('hashchange', route);
+
+    await refresh(true);
+    route();
+    setInterval(() => refresh(false), 5000);
+    setInterval(checkNewEvents, 6000);
+  } catch (err) {
+    console.error('Error durante el arranque:', err);
+    // Asegurarse de que el modal esté oculto si hubo un error
+    closeModal();
+  }
 }
 
 function route() {
