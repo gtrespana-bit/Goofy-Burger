@@ -1159,6 +1159,53 @@ function cameraWizard() {
   $('#w-cancel').onclick = closeModal;
 
   // ---- autodescubrimiento ----
+  // Agrupa las URLs RTSP por canal (channel=N) y separa principal/secundario.
+  // Las cámaras multi-lente (iCSee/XMEye) devuelven una URL por lente.
+  function parseChannelUrls(urls) {
+    const groups = new Map();
+    const leftover = [];
+    for (const u of urls) {
+      const chm = /[?&_]channel=(\d+)/i.exec(u);
+      if (!chm) { leftover.push(u); continue; }
+      const stm = /[?&_]stream=(\d+)/i.exec(u);
+      const isSub = !!(stm && stm[1] === '1');
+      const key = chm[1];
+      if (!groups.has(key)) groups.set(key, { channel: chm[1], main: '', sub: '' });
+      const g = groups.get(key);
+      if (isSub) { if (!g.sub) g.sub = u; }
+      else if (!g.main) g.main = u;
+    }
+    const sorted = [...groups.values()].sort((a, b) => Number(a.channel) - Number(b.channel));
+    return { groups: sorted, leftover };
+  }
+
+  // Crea una cámara por cada canal/lente detectado. Las URLs ya traen las
+  // credenciales embebidas (user=..&password=..), así que no las pisamos.
+  async function addAllChannels(groups) {
+    const base = $('#w-name').value.trim() || 'Cámara';
+    const grp = $('#w-group').value.trim() || 'General';
+    let added = 0;
+    for (const g of groups) {
+      const payload = {
+        name: `${base} · lente ${g.channel}`,
+        group: grp,
+        source_type: 'rtsp',
+        url: g.main || g.sub || '',
+        substream_url: g.sub || '',
+      };
+      try {
+        await api('/cameras', { method: 'POST', body: payload });
+        added++;
+      } catch (e) { toast(`Lente ${g.channel}: ${e.message}`, 'err'); }
+    }
+    if (added) {
+      toast(`${added} cámaras añadidas`);
+      closeModal();
+      await refresh(true);
+      location.hash = '#/dashboard';
+    }
+  }
+
   async function discover(mode, target = '') {
     const box = $('#w-dis-results');
     box.innerHTML = '<div class="muted"><span class="spinner"></span> Buscando dispositivos…</div>';
@@ -1172,10 +1219,30 @@ function cameraWizard() {
         },
       });
       if (mode === 'rtsp') {
-        box.innerHTML = (data.urls || []).map(u => `
-          <div class="item"><div class="grow"><div class="title" style="font-size:12px">${esc(u)}</div></div>
-            <button class="btn sm" data-url="${esc(u)}">Usar</button></div>`).join('')
-          || '<div class="muted">Sin resultados.</div>';
+        const urls = data.urls || [];
+        const { groups, leftover } = parseChannelUrls(urls);
+        let html = '';
+        if (groups.length > 1) {
+          html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
+            <div class="grow">
+              <div class="title">📷 Cámara multi-lente (${groups.length} canales)</div>
+              <div class="meta">Cada lente se añadirá como una cámara independiente.</div>
+            </div>
+            <button class="btn sm primary" id="w-add-channels">➕ Añadir los ${groups.length}</button>
+          </div>`;
+        }
+        html += groups.map(g => `
+          <div class="item"><div class="grow">
+            <div class="title" style="font-size:12px">Lente ${esc(g.channel)}</div>
+            <div class="meta" style="font-size:11px;word-break:break-all">${esc(g.main || g.sub)}</div>
+          </div>
+          <button class="btn sm" data-url="${esc(g.main || '')}" data-sub="${esc(g.sub || '')}">Usar</button></div>`).join('');
+        html += leftover.map(u => `
+          <div class="item"><div class="grow"><div class="title" style="font-size:12px;word-break:break-all">${esc(u)}</div></div>
+            <button class="btn sm" data-url="${esc(u)}" data-sub="">Usar</button></div>`).join('');
+        box.innerHTML = html || '<div class="muted">Sin resultados.</div>';
+        const addBtn = $('#w-add-channels', box);
+        if (addBtn) addBtn.onclick = () => addAllChannels(groups);
       } else {
         box.innerHTML = (data.devices || []).map(d => `
           <div class="item"><div class="grow">
@@ -1187,7 +1254,11 @@ function cameraWizard() {
             <button class="btn sm" data-probe="${esc(d.ip)}">Sondear RTSP</button>
           </div>`).join('') || '<div class="muted">No se han encontrado dispositivos.</div>';
       }
-      $$('[data-url]', box).forEach(b => b.onclick = () => { $('#w-url').value = b.dataset.url; toast('URL puesta en el formulario'); });
+      $$('[data-url]', box).forEach(b => b.onclick = () => {
+        $('#w-url').value = b.dataset.url;
+        if (b.dataset.sub) $('#w-sub').value = b.dataset.sub;
+        toast('URL puesta en el formulario');
+      });
       $$('[data-probe]', box).forEach(b => b.onclick = () => discover('rtsp', b.dataset.probe));
     } catch (e) {
       box.innerHTML = `<div class="muted">Error: ${esc(e.message)}</div>`;
