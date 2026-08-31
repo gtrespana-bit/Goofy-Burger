@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import threading
+import time
 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -18,7 +20,7 @@ from ..media import placeholder_jpeg, range_file_response, safe_media_path
 from ..models import slugify
 from ..services.manager import manager
 from ..services.recorder import ffmpeg_path
-from ..services.retention import storage_stats
+from ..services.retention import invalidate_storage_cache, storage_stats
 
 router = APIRouter(prefix="/recordings", tags=["recordings"])
 
@@ -76,15 +78,38 @@ def _scan_dir(base: Path, kind: str, cams: Dict[str, dict]) -> List[dict]:
     return items
 
 
+# La vista de grabaciones dispara 3 peticiones a la vez (listado, calendario y
+# timeline) y cada una recorría TODO el árbol de ficheros haciendo stat(). Con
+# años de grabación continua eso son cientos de miles de ficheros: cacheamos el
+# escaneo unos segundos para que las 3 peticiones compartan un único recorrido
+# y las visitas seguidas a la pestaña respondan al instante.
+_COLLECT_CACHE: Dict = {"ts": 0.0, "value": None}
+_COLLECT_LOCK = threading.Lock()
+COLLECT_TTL = 5.0
+
+
+def invalidate_collect_cache() -> None:
+    with _COLLECT_LOCK:
+        _COLLECT_CACHE["ts"] = 0.0
+        _COLLECT_CACHE["value"] = None
+
+
 def collect(camera_id: Optional[str] = None, kind: Optional[str] = None) -> List[dict]:
-    cams = _camera_index()
-    items = _scan_dir(recordings_dir(), "segment", cams) + _scan_dir(clips_dir(), "clip", cams)
+    with _COLLECT_LOCK:
+        now = time.time()
+        items = _COLLECT_CACHE.get("value")
+        if items is None or (now - _COLLECT_CACHE["ts"]) >= COLLECT_TTL:
+            cams = _camera_index()
+            items = _scan_dir(recordings_dir(), "segment", cams) + _scan_dir(
+                clips_dir(), "clip", cams
+            )
+            items.sort(key=lambda i: i["start_ts"], reverse=True)
+            _COLLECT_CACHE["ts"] = now
+            _COLLECT_CACHE["value"] = items
     if camera_id:
         items = [i for i in items if i["camera_id"] == camera_id]
     if kind:
         items = [i for i in items if i["kind"] == kind]
-    items.sort(key=lambda i: i["start_ts"], reverse=True)
-    # Ajusta la duración real del segmento en curso
     return items
 
 
@@ -235,6 +260,8 @@ def delete_recording(path: str = Query(...)):
         file_path.unlink()
     except Exception as exc:
         raise HTTPException(500, f"No se pudo borrar: {exc}")
+    invalidate_storage_cache()
+    invalidate_collect_cache()
     return {"ok": True}
 
 
@@ -263,4 +290,7 @@ def delete_camera_recordings(camera_id: str, kind: Optional[str] = None):
             shutil.rmtree(base, ignore_errors=True)
         except Exception:
             pass
+    if removed:
+        invalidate_storage_cache()
+        invalidate_collect_cache()
     return {"ok": True, "removed": removed}

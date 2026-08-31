@@ -120,6 +120,7 @@ def delete_camera(camera_id: str, purge: bool = Query(False, description="Borra 
     if purge:
         from ..config import clips_dir, recordings_dir, snapshots_dir
         from ..models import slugify
+        from ..services.retention import invalidate_storage_cache
         import shutil
 
         slug = slugify(camera_id)
@@ -127,6 +128,7 @@ def delete_camera(camera_id: str, purge: bool = Query(False, description="Borra 
             target = base / slug
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)
+        invalidate_storage_cache()
     return {"ok": True}
 
 

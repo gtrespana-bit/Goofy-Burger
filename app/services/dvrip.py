@@ -39,19 +39,31 @@ except Exception as exc:  # pragma: no cover - entorno
     DVRIP_ERROR = str(exc)
 
 
+# `import dvrip` se ejecutaba en CADA petición de /system/info y /diagnostics.
+# La disponibilidad de la librería no cambia mientras el servidor corre, así
+# que se comprueba una vez y se cachea.
+_avail_cache = {"ts": 0.0, "val": None}
+AVAIL_TTL = 120.0
+
+
 def available() -> bool:
     global DVRIP_AVAILABLE, DVRIP_ERROR
+    now = time.time()
+    cached = _avail_cache.get("val")
+    if cached is not None and (now - _avail_cache["ts"]) < AVAIL_TTL:
+        return bool(cached)
     try:
         import dvrip  # noqa: F401
         import dvrip.io  # noqa: F401
 
         DVRIP_AVAILABLE = True
         DVRIP_ERROR = ""
-        return True
     except Exception as exc:
         DVRIP_AVAILABLE = False
         DVRIP_ERROR = str(exc)
-        return False
+    _avail_cache["ts"] = now
+    _avail_cache["val"] = DVRIP_AVAILABLE
+    return DVRIP_AVAILABLE
 
 
 def _open_client(host: str, port: int = DVRIP_PORT, timeout: float = 4.0) -> Optional[DVRIPClient]:

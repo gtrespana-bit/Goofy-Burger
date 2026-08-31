@@ -34,11 +34,15 @@ def _load() -> List[Dict[str, Any]]:
 
 
 def _persist(items: List[Dict[str, Any]]) -> None:
+    global _CACHE
     path = events_path()
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(items, indent=2, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
+    # Mantiene la caché coherente. Antes, prune()/clear() escribían una lista
+    # nueva al disco pero la caché en memoria seguía con los eventos borrados.
+    _CACHE = items
 
 
 def add(event: Dict[str, Any]) -> Dict[str, Any]:

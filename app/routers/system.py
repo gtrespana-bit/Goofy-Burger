@@ -83,13 +83,28 @@ def _log_files() -> List[dict]:
     return out
 
 
+# `import ultralytics` arrastra torch y puede tardar varios segundos. Se hacía
+# en CADA /system/info (sondeado cada 5 s) y en /system/diagnostics, agotando
+# el pool de hilos de uvicorn y encolando el resto de peticiones (por eso todo
+# parecía lento o daba errores). La disponibilidad no cambia en caliente: se
+# comprueba una vez y se cachea.
+_ultra_cache = {"ts": 0.0, "val": False}
+_ULTRA_TTL = 300.0
+
+
 def _ultralytics_available() -> bool:
+    now = time.time()
+    if (now - _ultra_cache["ts"]) < _ULTRA_TTL:
+        return bool(_ultra_cache["val"])
     try:
         import ultralytics  # noqa: F401
 
-        return True
+        val = True
     except Exception:
-        return False
+        val = False
+    _ultra_cache["ts"] = now
+    _ultra_cache["val"] = val
+    return val
 
 
 @router.get("/info")

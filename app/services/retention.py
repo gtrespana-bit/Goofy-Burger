@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -36,7 +37,18 @@ def dir_size(root: Path) -> Tuple[int, int]:
     return total, count
 
 
-def storage_stats() -> Dict:
+# El cálculo de almacenamiento recorre (y hace stat de) TODOS los ficheros de
+# grabaciones/clips/instantáneas. Con grabación continua eso son miles de
+# ficheros, así que no puede recalcularse en cada sondeo de la UI (cada 5 s)
+# ni en cada petición de /system/info, /system/dashboard o /system/diagnostics.
+# Lo cacheamos unos segundos: la UI responde al instante y el dato sigue siendo
+# fresco. Las operaciones que borran ficheros invalidan la caché.
+_STATS_CACHE: Dict = {"ts": 0.0, "value": None}
+_STATS_LOCK = threading.Lock()
+STATS_TTL = 15.0  # segundos
+
+
+def _compute_storage_stats() -> Dict:
     rec_dir, clip_dir, snap_dir = recordings_dir(), clips_dir(), snapshots_dir()
     rec_size, rec_count = dir_size(rec_dir)
     clip_size, clip_count = dir_size(clip_dir)
@@ -52,6 +64,25 @@ def storage_stats() -> Dict:
         "snapshots": {"bytes": snap_size, "files": snap_count, "dir": str(snap_dir)},
         "disk": {"total": disk_total, "free": disk_free},
     }
+
+
+def storage_stats(force: bool = False) -> Dict:
+    with _STATS_LOCK:
+        now = time.time()
+        cached = _STATS_CACHE.get("value")
+        if not force and cached is not None and (now - _STATS_CACHE["ts"]) < STATS_TTL:
+            return cached
+        value = _compute_storage_stats()
+        _STATS_CACHE["ts"] = now
+        _STATS_CACHE["value"] = value
+        return value
+
+
+def invalidate_storage_cache() -> None:
+    """Borra la caché de estadísticas (tras borrar grabaciones o podar)."""
+    with _STATS_LOCK:
+        _STATS_CACHE["ts"] = 0.0
+        _STATS_CACHE["value"] = None
 
 
 def prune(retention_days: int = None, max_gb: float = None,
@@ -137,4 +168,6 @@ def prune(retention_days: int = None, max_gb: float = None,
             except Exception:
                 continue
 
+    if deleted["files"]:
+        invalidate_storage_cache()
     return {**deleted, "events": removed_events}

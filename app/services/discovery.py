@@ -108,7 +108,7 @@ DEFAULT_PORTS = [554, 8554, 80, 8080, 8000, 8899, 10554]
 # --------------------------------------------------------------------------
 # Red local
 # --------------------------------------------------------------------------
-def local_ip() -> str:
+def _resolve_local_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.2)
@@ -121,6 +121,22 @@ def local_ip() -> str:
             return socket.gethostbyname(socket.gethostname())
         except Exception:
             return "127.0.0.1"
+
+
+# La IP local se consulta en cada /system/info (la UI lo sondea cada 5 s).
+# Resolverla abre un socket y, si falla, puede bloquear en DNS. La cacheamos.
+_local_ip: Dict[str, object] = {"ts": 0.0, "ip": ""}
+_LOCAL_IP_TTL = 60.0
+
+
+def local_ip() -> str:
+    now = time.time()
+    if _local_ip["ip"] and (now - float(_local_ip["ts"])) < _LOCAL_IP_TTL:
+        return str(_local_ip["ip"])
+    ip = _resolve_local_ip()
+    _local_ip["ip"] = ip
+    _local_ip["ts"] = now
+    return ip
 
 
 def local_subnets(prefixlen: int = 24) -> List[str]:

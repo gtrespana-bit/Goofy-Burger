@@ -469,7 +469,12 @@ async function route() {
   await showView(view || 'dashboard', param);
 }
 
+let _refreshBusy = false;
 async function refresh(full = false) {
+  // Si un refresco anterior sigue en vuelo, no lanzamos otro: así los sondeos
+  // nunca se acumulan ni saturan el backend (causa de esperas y errores).
+  if (_refreshBusy) return;
+  _refreshBusy = true;
   try {
     const [info, cams, settings] = await Promise.all([
       api('/system/info'),
@@ -493,6 +498,8 @@ async function refresh(full = false) {
     console.error(err);
     $('#system-sub').textContent = 'sin conexión con el servidor';
     if (err.message === '401' && state.auth.enabled) showLogin();
+  } finally {
+    _refreshBusy = false;
   }
 }
 
@@ -728,29 +735,42 @@ async function renderDashboard() {
     return;
   }
 
-  let dash = { cameras: state.cameras.length, online: 0, recording: 0, events_today: 0, by_label: {}, storage: {} };
-  try {
-    dash = await api('/system/dashboard');
-    state.dash = dash;
-  } catch { /* el panel no debe romperse si falla */ }
+  // Pintamos las tarjetas YA con los datos ya cargados en `state` (sin esperar
+  // otra llamada) y rellenamos los KPI del panel en segundo plano: la vista
+  // "Directo" aparece al instante aunque el dashboard tarde.
+  const online = state.cameras.filter(c => c.health?.state === 'running').length;
+  const recording = state.cameras.filter(c => c.health?.recording).length;
+  const dashFallback = {
+    cameras: state.cameras.length, online, recording,
+    events_today: 0, by_label: {}, storage: state.info.storage || {},
+  };
 
   const groups = {};
   state.cameras
     .slice().sort((a, b) => (a.order || 0) - (b.order || 0))
     .forEach(c => { (groups[c.group || 'General'] ||= []).push(c); });
 
-  const kpis = `
-  <div class="kpis">
-    <div class="kpi"><span class="label">Cámaras</span><b>${dash.online ?? 0}/${dash.cameras ?? state.cameras.length}</b><span class="sub">en directo</span></div>
-    <div class="kpi"><span class="label">Grabación</span><b>${dash.recording ?? 0}</b><span class="sub">ahora mismo</span></div>
-    <div class="kpi"><span class="label">Hoy</span><b>${dash.events_today ?? 0}</b><span class="sub">eventos <span class="muted">${Object.entries(dash.by_label || {}).map(([k, v]) => `${k}:${v}`).join(' · ')}</span></span></div>
-    <div class="kpi"><span class="label">Almacenamiento</span><b>${fmtBytes(((dash.storage?.recordings?.bytes || 0) + (dash.storage?.clips?.bytes || 0)))}</b><span class="sub">${fmtBytes(dash.storage?.disk?.free || 0)} libres</span></div>
+  const kpiMarkup = d => `
+  <div class="kpis" id="kpis">
+    <div class="kpi"><span class="label">Cámaras</span><b>${d.online ?? 0}/${d.cameras ?? state.cameras.length}</b><span class="sub">en directo</span></div>
+    <div class="kpi"><span class="label">Grabación</span><b>${d.recording ?? 0}</b><span class="sub">ahora mismo</span></div>
+    <div class="kpi"><span class="label">Hoy</span><b>${d.events_today ?? 0}</b><span class="sub">eventos <span class="muted">${Object.entries(d.by_label || {}).map(([k, v]) => `${k}:${v}`).join(' · ')}</span></span></div>
+    <div class="kpi"><span class="label">Almacenamiento</span><b>${fmtBytes(((d.storage?.recordings?.bytes || 0) + (d.storage?.clips?.bytes || 0)))}</b><span class="sub">${fmtBytes(d.storage?.disk?.free || 0)} libres</span></div>
   </div>`;
 
-  view.innerHTML = kpis + Object.entries(groups).map(([group, cams]) => `
+  view.innerHTML = kpiMarkup(dashFallback) + Object.entries(groups).map(([group, cams]) => `
     <div class="section-title">${esc(group)}</div>
     <div class="grid cams">${cams.map(camCard).join('')}</div>
   `).join('');
+
+  // KPI del backend en segundo plano (no bloquea la vista ni los streams).
+  api('/system/dashboard')
+    .then(d => {
+      state.dash = d;
+      const k = $('#kpis');
+      if (k) k.outerHTML = kpiMarkup(d);
+    })
+    .catch(() => { /* el panel no debe romperse si falla */ });
 
   $$('[data-cam]').forEach(card => {
     card.querySelector('.feed').onclick = () => { location.hash = '#/camera/' + card.dataset.cam; };
@@ -1511,7 +1531,10 @@ function videoModal(path, title) {
   };
 }
 
+let _eventsBusy = false;
 async function checkNewEvents() {
+  if (_eventsBusy) return;
+  _eventsBusy = true;
   try {
     const data = await api('/events?limit=1');
     const ev = (data.events || [])[0];
@@ -1530,6 +1553,7 @@ async function checkNewEvents() {
     }
     state.lastEventTs = ev.ts;
   } catch { /* silencioso */ }
+  finally { _eventsBusy = false; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1769,8 +1793,15 @@ async function renderSettings() {
   const canAdmin = !state.auth.enabled || state.auth.user?.role === 'admin';
   let sec = { auth_enabled: false, users: [], api_tokens: [], remote: {} };
   let pushSt = { available: false, enabled: false, public_key: '', subscriptions: 0, hint: '' };
-  if (canAdmin) { try { sec = await api('/settings/auth/status'); } catch { /* panel simple */ }
-    try { pushSt = await api('/push/status'); } catch { /* push opcional */ } }
+  if (canAdmin) {
+    // En paralelo (antes era secuencial y la pestaña "Ajustes" tardaba el doble).
+    const [secR, pushR] = await Promise.all([
+      api('/settings/auth/status').catch(() => null),
+      api('/push/status').catch(() => null),
+    ]);
+    if (secR) sec = secR;
+    if (pushR) pushSt = pushR;
+  }
   $('#view').innerHTML = `
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr))">
 

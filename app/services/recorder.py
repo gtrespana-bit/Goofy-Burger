@@ -30,19 +30,35 @@ logger = get_logger("vigia.recorder")
 IS_WIN = platform.system() == "Windows"
 
 
+_ffmpeg_cache: dict = {"ts": 0.0, "path": None, "done": False}
+_FFMPEG_TTL = 60.0
+
+
 def ffmpeg_path() -> Optional[str]:
-    """Localiza ffmpeg: PATH del sistema, o el binario que trae imageio-ffmpeg."""
+    """Localiza ffmpeg: PATH del sistema, o el binario que trae imageio-ffmpeg.
+
+    Se cachea (también el caso "no encontrado"): se consulta en cada
+    /system/info, /diagnostics y miniaturas, y ``shutil.which`` +
+    ``import imageio_ffmpeg`` no deben repetirse en cada sondeo de la UI.
+    """
     from shutil import which
 
-    found = which("ffmpeg") or which("ffmpeg.exe")
-    if found:
-        return found
-    try:  # alternativa vía pip: `pip install imageio-ffmpeg`
-        import imageio_ffmpeg  # type: ignore
+    now = time.time()
+    if _ffmpeg_cache["done"] and (now - _ffmpeg_cache["ts"]) < _FFMPEG_TTL:
+        return _ffmpeg_cache["path"]
 
-        return imageio_ffmpeg.get_ffmpeg_exe()
-    except Exception:
-        return None
+    found = which("ffmpeg") or which("ffmpeg.exe")
+    if not found:
+        try:  # alternativa vía pip: `pip install imageio-ffmpeg`
+            import imageio_ffmpeg  # type: ignore
+
+            found = imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            found = None
+    _ffmpeg_cache["ts"] = now
+    _ffmpeg_cache["path"] = found
+    _ffmpeg_cache["done"] = True
+    return found
 
 
 def _popen(args: List[str], **kwargs):
