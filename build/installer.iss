@@ -24,7 +24,6 @@
 
 ; x64compatible (soporta Arm64 Windows 11 con emulación x64) existe desde
 ; Inno Setup 6.3.0. Con versiones anteriores se usa x64.
-#define MyArchitecture "x64"
 #if VER < EncodeVer(6,3,0)
   #define MyArchitecture "x64"
 #else
