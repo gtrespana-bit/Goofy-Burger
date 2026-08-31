@@ -4,10 +4,13 @@ from __future__ import annotations
 
 
 from concurrent.futures import ThreadPoolExecutor
+import re
 from typing import Any, Dict
+from urllib.parse import urlsplit
 
 import cv2
 from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import config
@@ -26,6 +29,38 @@ def _defaults() -> Dict[str, Any]:
     return {"detection": data.get("detection", {}), "recording": data.get("recording", {})}
 
 
+def _source_key(cam: Dict[str, Any]) -> tuple:
+    """Clave que identifica el dispositivo/canal real de una cámara.
+
+    Sirve para que el asistente y la API no creen el mismo dispositivo-canal
+    dos veces (el motivo de que aparecieran 10 cámaras tras añadir dos veces la
+    misma iCSee multi-lente).
+    """
+    st = cam.get("source_type") or "rtsp"
+    if st == "dvrip":
+        dv = cam.get("dvrip") or {}
+        return ("dvrip", str(dv.get("host", "")).lower(), int(dv.get("channel", -1) or -1))
+    url = cam.get("url") or ""
+    # Sin credenciales: sólo interesa el dispositivo y el canal.
+    host = (urlsplit(url).hostname or "").lower()
+    if host:
+        m = re.search(r"[?&_]channel=(\d+)", url, re.I)
+        if m:
+            return ("channel", host, m.group(1))
+        return ("url", host, redact(url))
+    return ("url", "", redact(url))
+
+
+def _find_duplicate(cam: Dict[str, Any]):
+    key = _source_key(cam)
+    for existing in config.cameras():
+        if existing.get("id") == cam.get("id"):
+            continue
+        if _source_key(existing) == key:
+            return existing
+    return None
+
+
 @router.get("")
 def list_cameras():
     return {"cameras": manager.cameras_with_status()}
@@ -36,10 +71,53 @@ def create_camera(payload: Dict[str, Any] = Body(...)):
     cam = build_camera(payload, _defaults())
     if not cam["name"]:
         raise HTTPException(400, "Falta el nombre")
+    # No duplicar el mismo dispositivo-canal aunque el usuario pulse "Añadir"
+    # varias veces. Si ya existe, la actualizamos: así una cámara que se había
+    # añadido con credenciales incorrectas se corrige al reintentar el asistente.
+    dup = _find_duplicate(cam)
+    if dup:
+        updated_cam = config.update_camera(dup["id"], dict(payload))
+        if updated_cam:
+            manager.sync(config.cameras())
+            updated_cam["health"] = manager.status(dup["id"])
+            return JSONResponse(
+                {"camera": updated_cam, "duplicate": True, "updated": True},
+                status_code=200,
+            )
     config.add_camera(cam)
     if cam.get("enabled", True):
         manager.start(cam)
     return {"camera": cam}
+
+
+@router.post("/dedupe")
+def dedupe_cameras():
+    """Quita las cámaras duplicadas del mismo dispositivo-canal.
+
+    Cuando se añade dos veces una iCSee multi-lente, al arrancar aparecen
+    decenas de cámaras muertas (2 mosaicos + N x cada lente). Esta operación
+    conserva la primera de cada grupo y detiene/elimina el resto.
+    """
+    seen: Dict[tuple, Dict[str, Any]] = {}
+    removed: list[Dict[str, Any]] = []
+    for cam in list(config.cameras()):
+        key = _source_key(cam)
+        if key in seen:
+            removed.append(cam)
+            manager.stop(cam.get("id", ""))
+            config.remove_camera(cam.get("id", ""))
+        else:
+            seen[key] = cam
+    if removed:
+        manager.sync(config.cameras())
+    return {
+        "removed": [
+            {"id": c.get("id"), "name": c.get("name"), "source_type": c.get("source_type")}
+            for c in removed
+        ],
+        "count": len(removed),
+        "remaining": len(config.cameras()),
+    }
 
 
 @router.get("/{camera_id}")

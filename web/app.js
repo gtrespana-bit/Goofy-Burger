@@ -477,10 +477,28 @@ function renderTopbar() {
   }
 }
 
+function countDuplicateCameras(cams) {
+  const seen = new Map(); let dup = 0;
+  for (const c of cams || []) {
+    let key;
+    if (c.source_type === 'dvrip' && (c.dvrip || {}).host) {
+      key = `dvrip:${c.dvrip.host.toLowerCase()}:${+c.dvrip.channel}`;
+    } else if (c.url) {
+      const host = icseeInfo(c.url).host;
+      const ch = /[?&_]channel=(\d+)/i.exec(c.url || '');
+      key = host ? (ch ? `ch:${host}:${ch[1]}` : `url:${host}:${c.url}`) : `url:${c.url}`;
+    } else key = c.id || '';
+    if (seen.has(key)) dup++;
+    else seen.set(key, c);
+  }
+  return dup;
+}
+
 async function showDiagnostics() {
   openModal('🩺 Diagnóstico y errores', '<div class="muted"><span class="spinner"></span> Leyendo logs y dependencias…</div>', { wide: true });
   try {
     const d = await api('/system/diagnostics');
+    const dupCount = countDuplicateCameras(d.cameras || []);
     const body = $('#modal-body');
     const depRow = (name, ok, detail = '') => `<tr><td>${esc(name)}</td><td style="color:${ok ? 'var(--ok,#3ddc97)' : 'var(--warn,#ffb454)'}">${ok ? '✓' : '⚠'}</td><td class="muted">${esc(detail || '')}</td></tr>`;
     const camRows = (d.cameras || []).map(c => `<tr>
@@ -491,6 +509,9 @@ async function showDiagnostics() {
       </tr>`).join('') || '<tr><td colspan="4" class="muted">Sin cámaras.</td></tr>';
     const logLines = (d.log_tail || []).map(l => esc(l)).join('\n') || '(sin líneas)';
     body.innerHTML = `
+      ${dupCount ? `<div style="background:rgba(255,180,84,.12);border:1px solid var(--warn,#ffb454);border-radius:8px;padding:8px 10px;margin-bottom:10px">
+        ⚠️ Hay <b>${dupCount}</b> cámara(s) duplicada(s) del mismo dispositivo-canal. Usa <b>🧹 Limpiar duplicados</b> para conservar una sola por lente.
+      </div>` : ''}
       <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
         <div class="item"><b>Carpeta de datos</b><div class="meta">${esc(d.data_dir)}</div><div class="meta">${d.data_dir_writable ? '✓ escribible' : '⚠ no escribible'}</div></div>
         <div class="item"><b>ffmpeg</b><div class="meta">${d.ffmpeg ? '✓ ' + esc(d.ffmpeg) : '⚠ no encontrado (usará imageio si está instalado)'}</div></div>
@@ -506,6 +527,7 @@ async function showDiagnostics() {
       <div class="row" style="justify-content:space-between">
         <h4 style="margin:0">Log ${esc(d.version || '')}</h4>
         <div class="row" style="gap:6px">
+          <button class="btn sm muted" id="diag-dedupe">🧹 Limpiar duplicados</button>
           <button class="btn sm" id="diag-refresh">⟳ Refrescar</button>
           <button class="btn sm" id="diag-copy">📋 Copiar resumen</button>
           <button class="btn sm" id="diag-download">⬇ Descargar vigia.log</button>
@@ -513,6 +535,28 @@ async function showDiagnostics() {
       </div>
       <pre class="logview">${logLines}</pre>
       ${(d.startup_error_tail || []).length ? `<details style="margin-top:8px"><summary>Errores de arranque (startup_error.log)</summary><pre class="logview">${(d.startup_error_tail || []).map(esc).join('\n')}</pre></details>` : ''}`;
+    $('#diag-dedupe').onclick = async () => {
+      if (!confirm('¿Quitar las cámaras duplicadas del mismo dispositivo-canal? Se conservará la primera.')) return;
+      const btn = $('#diag-dedupe');
+      btn.disabled = true;
+      btn.textContent = 'Limpiando…';
+      try {
+        const r = await api('/cameras/dedupe', { method: 'POST' });
+        if (r.count > 0) {
+          toast(`🧹 ${r.count} cámara(s) duplicada(s) eliminadas. Quedan ${r.remaining}.`, 'ok');
+          await refresh(true);
+          showDiagnostics();
+        } else {
+          toast('No hay cámaras duplicadas.', 'ok');
+          btn.disabled = false;
+          btn.textContent = '🧹 Limpiar duplicados';
+        }
+      } catch (e) {
+        toast(e.message || 'No se pudieron limpiar', 'err');
+        btn.disabled = false;
+        btn.textContent = '🧹 Limpiar duplicados';
+      }
+    };
     $('#diag-refresh').onclick = () => showDiagnostics();
     $('#diag-copy').onclick = async () => {
       try {
@@ -2344,6 +2388,30 @@ function cameraWizard() {
     return { groups: sorted, leftover };
   }
 
+  // Busca una cámara ya existente que apunte al mismo dispositivo-canal.
+  // Si existe, la actualizamos con las credenciales/configuración del asistente
+  // en lugar de crear una copia (era la causa de decenas de cámaras muertas al
+  // pulsar "Añadir" dos veces).
+  function alreadyExists(payload) {
+    return state.cameras.find(c => {
+      if (payload.source_type === 'dvrip' && c.source_type === 'dvrip') {
+        return (c.dvrip?.host || '') === (payload.dvrip?.host || '')
+          && +c.dvrip?.channel === +(payload.dvrip?.channel ?? -1);
+      }
+      if (payload.source_type === 'rtsp') {
+        const a = icseeInfo(payload.url || '');
+        const b = icseeInfo(c.url || '');
+        if (a.host && a.host === b.host) {
+          const ca = /[?&_]channel=(\d+)/i.exec(payload.url || '');
+          const cb = /[?&_]channel=(\d+)/i.exec(c.url || '');
+          if (ca && cb && ca[1] === cb[1]) return c;
+        }
+        if ((payload.url || '') === (c.url || '')) return c;
+      }
+      return false;
+    });
+  }
+
   function onvifConfigFor(url, port = 8899, username = '', password = '') {
     const info = icseeInfo(url);
     const user = username || info.username;
@@ -2368,6 +2436,7 @@ function cameraWizard() {
     const grp = $('#w-group').value.trim() || 'General';
     const icsee = groups.some(g => isIcseeUrl(g.main || g.sub));
     let added = 0;
+    let updated = 0;
     for (const g of groups) {
       const rawUrl = g.main || g.sub || '';
       // IMPORTANTE: las credenciales de RTSP pueden estar dentro de la propia
@@ -2405,13 +2474,23 @@ function cameraWizard() {
       } else if (icsee) {
         payload.onvif = onvifConfigFor(url);
       }
+      const dup = alreadyExists(payload);
+      if (dup) {
+        const label = g.mosaic ? 'Mosaico' : 'Lente ' + g.channel;
+        try {
+          await api(`/cameras/${dup.id}`, { method: 'PATCH', body: payload });
+          updated++;
+          toast(`${label}: ya existía, credenciales y configuración actualizadas`, 'warn');
+        } catch (e) { toast(`${label}: ${e.message}`, 'err'); }
+        continue;
+      }
       try {
         await api('/cameras', { method: 'POST', body: payload });
         added++;
       } catch (e) { toast(`${g.mosaic ? 'Mosaico' : 'Lente ' + g.channel}: ${e.message}`, 'err'); }
     }
-    if (added) {
-      toast(`${added} cámaras añadidas${icsee ? ' (ONVIF/PTZ configurado)' : ''}`);
+    if (added || updated) {
+      toast(`${added} cámaras añadidas${updated ? `, ${updated} actualizadas` : ''}${icsee ? ' (ONVIF/PTZ configurado)' : ''}`);
       closeModal();
       await refresh(true);
       location.hash = '#/dashboard';
@@ -2428,6 +2507,7 @@ function cameraWizard() {
     const ptzProfile = (ov.profiles || []).find(p => p.has_ptz) || (ov.profiles || [])[0];
     const ptzIndex = ptzProfile ? (ov.profiles || []).indexOf(ptzProfile) : (ov.has_ptz ? 0 : -1);
     let added = 0;
+    let updated = 0;
     for (const lens of lenses || []) {
       const index = +lens.index || 0;
       const label = lens.label || `Lente ${index + 1}`;
@@ -2465,13 +2545,22 @@ function cameraWizard() {
           use_onvif_stream: false,
         };
       }
+      const dup = alreadyExists(payload);
+      if (dup) {
+        try {
+          await api(`/cameras/${dup.id}`, { method: 'PATCH', body: payload });
+          updated++;
+          toast(`${label}: ya existía, credenciales y configuración actualizadas`, 'warn');
+        } catch (e) { toast(`${label}: ${e.message}`, 'err'); }
+        continue;
+      }
       try {
         await api('/cameras', { method: 'POST', body: payload });
         added++;
       } catch (e) { toast(`${label}: ${e.message}`, 'err'); }
     }
-    if (added) {
-      toast(`${added} lente(s) añadidas vía DVRIP${ov.port ? ' · PTZ en lente giratoria.' : ''}`);
+    if (added || updated) {
+      toast(`${added} lente(s) añadidas vía DVRIP${updated ? `, ${updated} actualizadas` : ''}${ov.port ? ' · PTZ en lente giratoria.' : ''}`);
       closeModal();
       await refresh(true);
       location.hash = '#/dashboard';

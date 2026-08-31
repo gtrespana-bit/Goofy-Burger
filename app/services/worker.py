@@ -217,7 +217,8 @@ class CameraWorker(threading.Thread):
     # ------------------------------------------------------------------
     def run(self) -> None:
         log.info("Iniciando cámara %s (%s)", self.camera.get("name"), self.id)
-        backoff = 1.0
+        backoff = 5.0
+        no_frame_backoff = 1.0
         consecutive_failures = 0
         last_detect = 0.0
         last_preview = 0.0
@@ -242,22 +243,38 @@ class CameraWorker(threading.Thread):
             try:
                 if self.source is None:
                     if not self._open_source():
-                        time.sleep(min(30.0, backoff))
-                        backoff = min(30.0, backoff * 1.6)
+                        time.sleep(min(60.0, backoff))
+                        backoff = min(60.0, backoff * 1.8)
                         continue
-                    backoff = 1.0
+                    backoff = 2.0
+                    no_frame_backoff = 1.0
                     consecutive_failures = 0
 
                 ok, frame = self.source.read()
                 now = time.time()
                 if not ok or frame is None:
                     consecutive_failures += 1
-                    if consecutive_failures >= 25:
+                    if consecutive_failures == 1:
+                        # La fuente abrió pero no entrega fotogramas. Lo marcamos
+                        # antes del umbral para que el usuario lo vea en la UI.
                         self.status["state"] = "reconnecting"
-                        log.warning(
-                            "Sin frames en %s, reconectando (%d fallos)",
-                            self.id, consecutive_failures,
+                        self.status["last_error"] = (
+                            getattr(self.source, "last_error", "")
+                            or "La fuente abrió pero no envía fotogramas"
                         )
+                    if consecutive_failures >= 25:
+                        err = (
+                            getattr(self.source, "last_error", "")
+                            or "La fuente abrió pero no envía fotogramas"
+                        )
+                        self.status["state"] = "reconnecting"
+                        self.status["last_error"] = err
+                        if err != self._last_logged_error:
+                            self._last_logged_error = err
+                            log.warning(
+                                "Sin frames en %s, reconectando (%d fallos): %s",
+                                self.id, consecutive_failures, err,
+                            )
                         try:
                             self.source.release()
                         except Exception:
@@ -265,10 +282,15 @@ class CameraWorker(threading.Thread):
                         self.source = None
                         consecutive_failures = 0
                         self.status["reconnects"] += 1
+                        time.sleep(no_frame_backoff)
+                        no_frame_backoff = min(30.0, no_frame_backoff * 1.8)
                     time.sleep(0.05)
                     continue
 
                 consecutive_failures = 0
+                no_frame_backoff = 1.0
+                self.status["last_error"] = ""
+                self._last_logged_error = ""
                 frames += 1
                 fps_count += 1
                 self.status["state"] = "running"
@@ -385,19 +407,30 @@ class CameraWorker(threading.Thread):
                 log.warning("Error abriendo la fuente de %s: %s", self.id, err)
             return False
         # primer frame para dimensiones
+        got_frame = False
         for _ in range(15):
             ok, frame = self.source.read()
             if ok and frame is not None:
                 h, w = frame.shape[:2]
                 self.status["resolution"] = f"{w}x{h}"
                 frame_bus.publish(self.id, frame, quality=PREVIEW_QUALITY)
+                got_frame = True
                 break
             time.sleep(0.1)
         if self.segment is not None:
             self.segment.source = self.source
-        self.status["last_error"] = ""
-        self._last_logged_error = ""
-        self.status["state"] = "running"
+        if got_frame:
+            self.status["last_error"] = ""
+            self._last_logged_error = ""
+            self.status["state"] = "running"
+        else:
+            # La fuente se abrió pero aún no ha entregado vídeo. No lo tratamos
+            # como "conectado" para que la UI y el log lo muestren.
+            self.status["last_error"] = (
+                getattr(self.source, "last_error", "")
+                or "La fuente abrió pero no envía fotogramas"
+            )
+            self.status["state"] = "reconnecting"
         return True
 
     # ------------------------------------------------------------------

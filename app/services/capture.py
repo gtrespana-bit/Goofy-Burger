@@ -76,20 +76,27 @@ class Cv2Source(Source):
     def open(self) -> bool:
         target = self._build_target()
         if target is None:
+            self.last_error = "No se pudo construir la fuente de vídeo"
             return False
         self.release()
-        self.cap = cv2.VideoCapture(target)
-        if not self.cap.isOpened():
-            # Segundo intento sin backend específico
-            self.cap = cv2.VideoCapture(target if not isinstance(target, str) else target)
-        if self.cap is not None and self.cap.isOpened():
-            # Algunos backends ignoran el buffer; 1 frame de buffer = más fresco
-            try:
-                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            except Exception:
-                pass
-            return True
+        self.last_error = ""
+        try:
+            self.cap = cv2.VideoCapture(target)
+            if not self.cap.isOpened():
+                # Segundo intento sin backend específico
+                self.cap = cv2.VideoCapture(target if not isinstance(target, str) else target)
+            if self.cap is not None and self.cap.isOpened():
+                # Algunos backends ignoran el buffer; 1 frame de buffer = más fresco
+                try:
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                except Exception:
+                    pass
+                return True
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
         self.cap = None
+        if not self.last_error:
+            self.last_error = "OpenCV no pudo abrir la fuente RTSP/USB/vídeo"
         return False
 
     def read(self):
@@ -125,6 +132,8 @@ class FfmpegRTSPReader:
         self.height = int(height or 480)
         self.proc: Optional[subprocess.Popen] = None
         self.frame_size = self.width * self.height * 3
+        self.last_error = ""
+        self._stderr_lines: List[str] = []
 
     @staticmethod
     def _ffmpeg_bin() -> Optional[str]:
@@ -138,10 +147,32 @@ class FfmpegRTSPReader:
         except Exception:
             return None
 
+    def _drain_stderr(self) -> None:
+        if self.proc is None or self.proc.stderr is None:
+            return
+        try:
+            for line in self.proc.stderr:
+                self._stderr_lines.append(line.decode("utf-8", "ignore").strip())
+                if len(self._stderr_lines) > 25:
+                    self._stderr_lines.pop(0)
+        except Exception:
+            pass
+
+    def _error_text(self) -> str:
+        for line in reversed(self._stderr_lines):
+            if line:
+                # No exponer credenciales en el diagnóstico.
+                line = re.sub(r"(rtsp://)[^@\s]+@", r"\1***:***@", line)
+                line = re.sub(r"(user=)[^&\s/]+", r"\1***", line)
+                line = re.sub(r"((?:password|passwd)=)[^&\s/]+", r"\1***", line, flags=re.I)
+                return line
+        return "ffmpeg no produjo imagen (URL o credenciales incorrectas)"
+
     def open(self) -> bool:
         self.close()
         exe = self._ffmpeg_bin()
         if not exe:
+            self.last_error = "ffmpeg no está disponible"
             return False
         args = [
             exe, "-hide_banner", "-loglevel", "error",
@@ -152,18 +183,18 @@ class FfmpegRTSPReader:
             "-s", f"{self.width}x{self.height}",
             "-",
         ]
-        # stderr a DEVNULL: si la cámara empieza a escupir avisos y nos
-        # quedamos sin leerlos, el pipe se llena y ffmpeg se bloquea.
         try:
             self.proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 bufsize=self.frame_size,
             )
-        except Exception:
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
             self.proc = None
             return False
+        threading.Thread(target=self._drain_stderr, daemon=True, name="vigia-ffmpeg-stderr").start()
 
         # Esperamos el primer frame con timeout. ffmpeg puede tardar en
         # negociar; pero si no llega, preferimos fallar pronto y avisar.
@@ -176,10 +207,16 @@ class FfmpegRTSPReader:
         waiter.start()
         waiter.join(self.first_frame_timeout)
         if waiter.is_alive():
+            self.last_error = f"ffmpeg tardó más de {self.first_frame_timeout:.0f}s en dar vídeo"
             self.close()
             return False
         frame = frames[0] if frames else None
-        return frame is not None
+        if frame is None:
+            self.last_error = self._error_text()
+            self.close()
+            return False
+        self.last_error = ""
+        return True
 
     def _read_raw(self) -> Optional[np.ndarray]:
         if self.proc is None or self.proc.stdout is None or self.proc.poll() is not None:
@@ -476,7 +513,9 @@ class RtspSource(Cv2Source):
     def open(self) -> bool:
         target = self._build_target()
         if target is None:
+            self.last_error = "La cámara no tiene URL RTSP"
             return False
+        self.last_error = ""
         # Primero intentamos con OpenCV (rápido y con buena resolución).
         if super().open():
             # Algunos backends OpenCV dicen "abierto" aunque la cámara no dé
@@ -497,10 +536,16 @@ class RtspSource(Cv2Source):
         # que se quedan "abiertas" sin enviar frames.
         # Siempre usamos una resolución pequeña de trabajo; la grabación usa el
         # flujo original con ffmpeg (record_url).
-        self.ffmpeg = FfmpegRTSPReader(target)
-        if self.ffmpeg.open():
-            return True
-        self.ffmpeg = None
+        try:
+            self.ffmpeg = FfmpegRTSPReader(target)
+            if self.ffmpeg.open():
+                self.last_error = ""
+                return True
+            self.last_error = self.ffmpeg.last_error or "No se pudo abrir el flujo RTSP"
+            self.ffmpeg = None
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            self.ffmpeg = None
         return False
 
     def read(self):

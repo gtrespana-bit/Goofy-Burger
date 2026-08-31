@@ -11,6 +11,28 @@ from .config import DATA_DIR
 CONFIGURED = False
 
 
+class _NoiseFilter(logging.Filter):
+    """Oculta trazas de cierre de sockets/ffmpeg que no son fallos reales.
+
+    Al parar Vigía, Windows (Proactor) a veces registra
+    ``_ProactorBasePipeTransport._call_connection_lost()`` /
+    ``ConnectionResetError``. No indican un problema del usuario, sólo que la
+    conexión se cortó porque la aplicación se estaba cerrando.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        n = msg.lower()
+        if "connection reset" in n or "winerror 10054" in n or "forced" in n:
+            return False
+        if "_proactorbasepipetransport._call_connection_lost" in n:
+            return False
+        return True
+
+
 def get_logger(name: str) -> logging.Logger:
     """Logger usable antes de que se configure el logging raíz."""
     return logging.getLogger(name)
@@ -22,6 +44,7 @@ def setup(level: int = logging.INFO, log_to_file: bool = True) -> None:
         return
     root = logging.getLogger()
     root.setLevel(level)
+    root.addFilter(_NoiseFilter())
     fmt = logging.Formatter(
         "%(asctime)s %(levelname)-7s [%(name)s] %(message)s", "%Y-%m-%d %H:%M:%S"
     )
