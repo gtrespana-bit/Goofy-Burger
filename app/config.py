@@ -10,12 +10,52 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = Path(os.environ.get("VIGIA_DATA_DIR", BASE_DIR / "data")).resolve()
+
+
+def _os_appdata_dir() -> Path:
+    """Carpeta de datos del usuario para cada sistema operativo.
+
+    Se usa para que la configuración, grabaciones y eventos sobrevivan a
+    actualizaciones y a que el .exe empaquetado se mueva de sitio.
+    """
+    if os.name == "nt":
+        root = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(root) / "Vigia"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "Vigia"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "vigia"
+    return Path.home() / ".local" / "share" / "vigia"
+
+
+def default_data_dir() -> Path:
+    """Determina la carpeta de datos (config + grabaciones) de forma estable.
+
+    Preferencias:
+      1. Variable VIGIA_DATA_DIR (la usa el instalador/ejecutable).
+      2. Si ya existe una carpeta ``data/`` junto al código (instalaciones
+         antiguas desde el código fuente), se mantiene para no perder nada.
+      3. Carpeta de datos del usuario del SO (recomendado: sobrevive a
+         actualizaciones y a un .exe empaquetado con PyInstaller).
+    """
+    env = os.environ.get("VIGIA_DATA_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    if not getattr(sys, "frozen", False):
+        local = (BASE_DIR / "data").resolve()
+        if local.exists():
+            return local
+    return _os_appdata_dir().resolve()
+
+
+DATA_DIR = default_data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
 
 RECORDINGS_DIRNAME = "recordings"

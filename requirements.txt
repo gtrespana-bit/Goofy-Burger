@@ -1,4 +1,4 @@
-# --- Vigía: núcleo (obligatorio) -------------------------------------------
+# --- Vigía: dependencias obligatorias (se instalan siempre) ---------------
 fastapi>=0.110
 uvicorn[standard]>=0.27
 pydantic>=2.5
@@ -7,8 +7,14 @@ opencv-python-headless>=4.9        # si quieres ventanas/UI de OpenCV usa opencv
 requests>=2.31
 apscheduler>=3.10
 
-# --- Opcionales (recomendados) ----------------------------------------------
-# ONVIF (autodescubrimiento avanzado, PTZ, perfiles): descomenta para instalar
-# onvif-zeep>=0.2.12
-# Detección con IA (personas / vehículos / mascotas) vía YOLO:
+# ONVIF (detectar cámaras multi-lente, PTZ/mover, presets, snapshots).
+# Incluida SIEMPRE: es la vía para ver todas las lentes y controlar el giro.
+onvif-zeep>=0.2.12
+
+# ffmpeg (grabación sin recodificar, clips, miniaturas). imageio-ffmpeg trae
+# un binario de ffmpeg empaquetado, así que grabar funciona sin instalar nada
+# más (si el sistema ya tiene ffmpeg, se usa ese).
+imageio-ffmpeg>=0.4.9
+
+# --- Opcional (recomendado): detección con IA (personas / vehículos / mascotas)
 # ultralytics>=8.1

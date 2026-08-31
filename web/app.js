@@ -116,8 +116,8 @@ function confirmModal(title, text, onYes) {
       <button class="btn danger" data-yes>Confirmar</button>
     </div>`);
   $('#modal-body').addEventListener('click', e => {
-    if (e.target.dataset.yes) { closeModal(); onYes(); }
-    if (e.target.dataset.close || e.target.id === 'modal-close') closeModal();
+    if (e.target.hasAttribute('data-yes')) { closeModal(); onYes(); }
+    if (e.target.hasAttribute('data-close') || e.target.id === 'modal-close') closeModal();
   });
 }
 
