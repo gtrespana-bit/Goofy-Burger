@@ -22,6 +22,7 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 # que es una cadena, así que hay que declararlos explícitamente).
 hiddenimports = []
 hiddenimports += collect_submodules("app")
+hiddenimports += ["app", "app.main", "app.main:app"]
 hiddenimports += collect_submodules("onvif")
 hiddenimports += collect_submodules("zeep")
 hiddenimports += ["imageio_ffmpeg", "imageio_ffmpeg.binaries", "imageio_ffmpeg._utils"]

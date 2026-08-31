@@ -140,9 +140,17 @@ def _run_main() -> None:
         # Asegura la carpeta de datos estable también para el ejecutable.
         os.environ.setdefault("VIGIA_DATA_DIR", _default_data_dir())
 
+    # Importamos la app directamente en el ejecutable, en lugar de pasarle a
+    # uvicorn la cadena "app.main:app". Así PyInstaller analiza y empaqueta
+    # app.main de forma garantizada (con la cadena, la app dependía solo de
+    # hiddenimports y el .exe instalado daba "No module named 'app.main'").
+    from app.main import app as fastapi_app
+
     if args.reload:
         import uvicorn
 
+        # `reload` requiere que uvicorn reciba la app como cadena; es sólo para
+        # desarrollo, no para el .exe empaquetado.
         uvicorn.run(
             "app.main:app",
             host=args.host,
@@ -162,7 +170,7 @@ def _run_main() -> None:
     import uvicorn
 
     config = uvicorn.Config(
-        "app.main:app",
+        fastapi_app,
         host=args.host,
         port=args.port,
         log_level="info",

@@ -93,6 +93,11 @@ El instalador:
   `%APPDATA%\Vigia\logs\startup_error.log` además de mostrar un aviso en
   Windows. Si el puerto 8000 está ocupado, el aviso indica que puedes cerrar
   la otra instancia o lanzar `Vigia.exe --port 8001`.
+- **`ModuleNotFoundError: No module named 'app.main'` al abrir el `.exe`** —
+  si se encarga la app a Uvicorn como cadena (`"app.main:app"`), PyInstaller
+  puede no empaquetar `app.main` de forma fiable. `vigia.py` ahora importa
+  `from app.main import app` directamente y pasa la app ya cargada a Uvicorn,
+  por lo que PyInstaller la incluye siempre.
 
 ## macOS / Linux
 
