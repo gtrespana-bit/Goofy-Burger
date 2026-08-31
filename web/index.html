@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Vigía · Videovigilancia en casa</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎥</text></svg>" />
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">🎥</span>
+    <div>
+      <h1 id="system-name">Vigía</h1>
+      <p class="sub" id="system-sub">cargando…</p>
+    </div>
+  </div>
+
+  <div class="topstats" id="topstats"></div>
+
+  <div class="topactions">
+    <button class="btn ghost" id="btn-away" title="Modo fuera de casa">🏠 En casa</button>
+    <button class="btn ghost" id="btn-refresh" title="Actualizar">⟳</button>
+    <button class="btn primary" id="btn-add">+ Añadir cámara</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button class="tab active" data-view="dashboard">Directo</button>
+  <button class="tab" data-view="events">Eventos <span class="pill" id="events-pill"></span></button>
+  <button class="tab" data-view="recordings">Grabaciones</button>
+  <button class="tab" data-view="settings">Ajustes</button>
+</nav>
+
+<main id="view"></main>
+
+<!-- Modal genérico -->
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="modal-title">Título</h2>
+      <button class="iconbtn" id="modal-close">✕</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

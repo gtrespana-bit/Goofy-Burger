@@ -1,0 +1,13 @@
+# Datos generados en tiempo de ejecución (nunca al repo)
+data/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+Thumbs.db
+*.log
+
+# Modelos de IA descargados
+*.pt
+*.onnx
