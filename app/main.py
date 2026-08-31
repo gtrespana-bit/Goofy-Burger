@@ -11,8 +11,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import logging_setup
-from .auth import require_auth
+from .auth import require_auth, require_write
 from .config import DATA_DIR
+from .routers import auth as auth_router_mod
 from .routers import cameras, events, recordings, settings, stream, system
 from .services.manager import manager
 
@@ -51,9 +52,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Login/status públicos para que la interfaz pueda mostrar y resolver la
+# autenticación antes de pedir datos protegidos.
+app.include_router(auth_router_mod.router, prefix="/api")
+
 for router in (cameras.router, stream.router, recordings.router,
                events.router, settings.router, system.router):
-    app.include_router(router, prefix="/api", dependencies=[Depends(require_auth)])
+    app.include_router(
+        router,
+        prefix="/api",
+        dependencies=[Depends(require_auth), Depends(require_write)],
+    )
 
 
 @app.get("/healthz", include_in_schema=False)

@@ -230,3 +230,13 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .divider{height:1px;background:var(--line-soft);margin:16px 0}
 .flash{animation:flash .8s ease}
 @keyframes flash{0%{box-shadow:0 0 0 0 rgba(255,180,84,.6)}100%{box-shadow:0 0 0 16px rgba(255,180,84,0)}}
+
+/* ---------- Login ---------- */
+#auth-overlay{position:fixed;inset:0;background:var(--bg);display:grid;place-items:center;z-index:200;padding:20px}
+.auth-card{background:var(--panel);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);
+  width:min(380px,100%);padding:26px;text-align:center}
+.auth-card .auth-logo{font-size:44px;margin-bottom:4px}
+.auth-card h2{margin:0 0 6px;font-size:20px}
+.auth-card form{text-align:left;margin-top:14px}
+.auth-card .field label{font-size:12px;font-weight:600;color:var(--txt-faint)}
+.auth-card .btn{width:100%;justify-content:center}

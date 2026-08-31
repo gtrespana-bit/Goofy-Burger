@@ -50,7 +50,7 @@ async function api(path, opts = {}) {
     ...opts,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
-  if (res.status === 401) { toast('Sesión no autenticada', 'err'); throw new Error('401'); }
+  if (res.status === 401) { if (!opts.silent401) toast('Sesión no autenticada', 'err'); throw new Error('401'); }
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
@@ -81,6 +81,7 @@ const state = {
   filters: { recCamera: '', recDate: '', recKind: '', evCamera: '', evLabel: '', evUnack: false },
   lastEventTs: null,
   multiview: { layout: 'auto', order: JSON.parse(localStorage.getItem('vigia-multiview-order') || '[]') },
+  auth: { enabled: false, user: null, running: false },
 };
 
 /* ------------------------------------------------------------------ */
@@ -157,10 +158,12 @@ function confirmModal(title, text, onYes) {
   }, 500);
 })();
 
-async function boot() {
+async function startApp() {
+  // Si la app ya arrancó (p. ej. sesión caducada y vuelta a entrar), sólo
+  // refrescamos; no duplicamos listeners ni intervalos.
+  if (state.auth.running) { await refresh(true); return; }
+  state.auth.running = true;
   // Los event listeners del modal ya están configurados arriba
-  // No necesitamos configurarlos de nuevo aquí
-  
   try {
     $('#btn-add').onclick = () => cameraWizard();
     $('#btn-refresh').onclick = () => refresh(true);
@@ -171,6 +174,11 @@ async function boot() {
       renderTopbar();
       toast(away ? 'Modo fuera de casa activado' : 'Modo en casa');
     };
+    $$('#btn-logout').forEach(btn => btn.onclick = async () => {
+      try { await api('/auth/logout', { method: 'POST', body: {} }); } catch { /* ya caducó */ }
+      location.hash = '';
+      location.reload();
+    });
 
     $$('#tabs .tab').forEach(tab => {
       tab.onclick = () => { location.hash = '#/' + tab.dataset.view; };
@@ -186,6 +194,69 @@ async function boot() {
     // Asegurarse de que el modal esté oculto si hubo un error
     closeModal();
   }
+}
+
+function showLogin() {
+  let ov = $('#auth-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'auth-overlay';
+    ov.innerHTML = `
+      <div class="auth-card">
+        <div class="auth-logo">🎥</div>
+        <h2>Vigía Pro</h2>
+        <p class="muted">Introduce tu usuario y contraseña.</p>
+        <form id="auth-form">
+          <div class="field"><label>Usuario</label><input id="login-user" autocomplete="username" required></div>
+          <div class="field"><label>Contraseña</label><input id="login-pass" type="password" autocomplete="current-password" required></div>
+          <div class="field" style="display:none"><label>Código 2FA</label><input id="login-code" inputmode="numeric" autocomplete="one-time-code"></div>
+          <button class="btn primary" id="login-btn" type="submit" style="width:100%">Entrar</button>
+          <div id="login-err" class="muted" style="color:#ff6b6b;margin-top:8px"></div>
+        </form>
+      </div>`;
+    document.body.appendChild(ov);
+  }
+  ov.hidden = false;
+  $('#login-user').focus();
+  $('#auth-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = $('#login-btn');
+    btn.disabled = true; btn.textContent = 'Comprobando…';
+    $('#login-err').textContent = '';
+    const body = { username: $('#login-user').value.trim(), password: $('#login-pass').value };
+    const code = $('#login-code').value.trim();
+    if (code) body.code = code;
+    try {
+      const r = await api('/auth/login', { method: 'POST', body, silent401: true });
+      state.auth.user = r;
+      ov.remove();
+      await startApp();
+    } catch (err) {
+      // Si el usuario tiene 2FA activado, muestra el campo de código.
+      $('#login-code').parentElement.style.display = '';
+      $('#login-err').textContent = err.message === '401' ? 'Credenciales o código incorrectos.' : (err.message || 'Error al entrar');
+      btn.disabled = false;
+      btn.textContent = 'Entrar';
+    }
+  };
+}
+
+async function boot() {
+  try {
+    const st = await api('/auth/status', { silent401: true });
+    state.auth.enabled = !!st.auth_enabled;
+    if (state.auth.enabled) {
+      try {
+        state.auth.user = await api('/auth/me', { silent401: true });
+      } catch {
+        showLogin();
+        return;
+      }
+    }
+  } catch (err) {
+    console.error('No se pudo comprobar el estado de autenticación:', err);
+  }
+  await startApp();
 }
 
 async function route() {
@@ -226,6 +297,7 @@ async function refresh(full = false) {
   } catch (err) {
     console.error(err);
     $('#system-sub').textContent = 'sin conexión con el servidor';
+    if (err.message === '401' && state.auth.enabled) showLogin();
   }
 }
 
@@ -251,6 +323,11 @@ function renderTopbar() {
 
   $('#btn-away').textContent = away ? '🚶 Fuera de casa' : '🏠 En casa';
   $('#btn-away').classList.toggle('primary', away);
+  const logout = $('#btn-logout');
+  if (logout) {
+    logout.style.display = state.auth.enabled ? '' : 'none';
+    logout.title = state.auth.user?.username?.startsWith('token:') ? 'Token de API no intercambiable' : 'Cerrar sesión';
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1120,6 +1197,9 @@ function recItem(r) {
 async function renderSettings() {
   const s = state.settings;
   const info = state.info;
+  const canAdmin = !state.auth.enabled || state.auth.user?.role === 'admin';
+  let sec = { auth_enabled: false, users: [], api_tokens: [], remote: {} };
+  if (canAdmin) { try { sec = await api('/settings/auth/status'); } catch { /* panel simple */ } }
   $('#view').innerHTML = `
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr))">
 
@@ -1250,6 +1330,48 @@ async function renderSettings() {
       <button class="btn primary" id="dt-save" style="margin-top:8px">Guardar</button>
     </div>
 
+    <div class="panel" id="sec-panel">
+      <h3>👥 Usuarios, tokens y 2FA</h3>
+      <div class="field"><label>Nombre de usuario</label><input id="au-user" placeholder="usuario"></div>
+      <div class="field"><label>Nombre visible</label><input id="au-name" placeholder="Administrador"></div>
+      <div class="field"><label>Rol</label>
+        <select id="au-role"><option value="admin">Admin (puede todo)</option><option value="viewer">Sólo ver</option></select></div>
+      <div class="field"><label>Contraseña (obligatoria al crear)</label><input type="password" id="au-pass" placeholder="min. 8 caracteres"></div>
+      <div class="row"><button class="btn primary" id="au-save">Guardar usuario</button><span class="muted">Al guardar con el mismo nombre se actualiza.</span></div>
+      <div class="divider"></div>
+      <table>
+        <tr><th>Usuario</th><th>Rol</th><th>2FA</th><th></th></tr>
+        ${(sec.users || []).map(u => `<tr>
+          <td><b>${esc(u.name || u.username)}</b><div class="muted">${esc(u.username)}</div></td>
+          <td>${u.role === 'admin' ? 'Admin' : 'Visor'}</td>
+          <td>${u.totp_enabled ? '✅' : '—'}</td>
+          <td>
+            <button class="btn sm" data-2fa="${esc(u.username)}" data-2fa-enabled="${u.totp_enabled ? '1' : '0'}">${u.totp_enabled ? 'Desactivar 2FA' : 'Activar 2FA'}</button>
+            <button class="btn sm ghost" data-deluser="${esc(u.username)}">Eliminar</button>
+          </td>
+        </tr>`).join('')}
+      </table>
+      <div class="divider"></div>
+      <h4>🔑 Tokens de API</h4>
+      <div class="row">
+        <input id="at-name" placeholder="Nombre del token (ej. homeassistant)" style="flex:1">
+        <select id="at-role"><option value="admin">Admin</option><option value="viewer">Visor</option></select>
+        <button class="btn" id="at-create">Crear</button>
+      </div>
+      <div id="at-list" class="muted" style="margin-top:6px">
+        ${(sec.api_tokens || []).map(t => `<span class="badge">${esc(t.name)} · ${t.role} · ${esc(t.prefix)}… <button class="btn sm ghost" data-deltoken="${esc(t.name)}">🗑</button></span>`).join(' ')}
+      </div>
+      <div class="divider"></div>
+      <h4>📱 Acceso remoto</h4>
+      <div id="remote-box" class="muted">Comprobando red…</div>
+      <div class="form-grid" style="margin-top:8px">
+        <div class="field"><label>DDNS (opcional)</label><input id="remote-ddns" placeholder="midominio.duckdns.org"></div>
+        <div class="field"><label>Certificado HTTPS</label><input id="remote-cert" placeholder="C:\certs\vigia.crt"></div>
+        <div class="field"><label>Clave HTTPS</label><input id="remote-key" placeholder="C:\certs\vigia.key"></div>
+      </div>
+      <div class="row" style="margin-top:8px"><button class="btn" id="remote-save">Guardar acceso remoto</button><span class="muted">HTTPS se aplica al reiniciar Vigía.</span></div>
+    </div>
+
     <div class="panel">
       <h3>🔒 Seguridad e identidad</h3>
       <div class="field"><label>Nombre del sistema</label><input id="gn-name" value="${esc(s.general?.system_name || 'Vigía Pro')}"></div>
@@ -1282,6 +1404,10 @@ async function renderSettings() {
       </div>
     </div>
   </div>`;
+
+  // Viewer: no puede administrar usuarios ni tokens.
+  const secPanel = $('#sec-panel');
+  if (secPanel && !canAdmin) secPanel.remove();
 
   // --- almacenamiento ---
   $('#st-save').onclick = async () => {
@@ -1367,6 +1493,115 @@ async function renderSettings() {
     });
     toast('Ajustes de detección guardados'); refresh(true);
   };
+
+  // --- usuarios / tokens / acceso remoto ---
+  $('#au-save').onclick = async () => {
+    const username = $('#au-user').value.trim();
+    if (!username) return toast('Indica un nombre de usuario', 'warn');
+    try {
+      const r = await api('/settings/auth/users', {
+        method: 'POST',
+        body: { username, name: $('#au-name').value.trim(), role: $('#au-role').value, password: $('#au-pass').value },
+      });
+      toast(r.exists ? 'Usuario actualizado' : 'Usuario creado');
+      $('#au-pass').value = '';
+      refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo guardar', 'err'); }
+  };
+  $('#at-create').onclick = async () => {
+    const name = $('#at-name').value.trim();
+    if (!name) return toast('Pon un nombre al token', 'warn');
+    try {
+      const r = await api('/settings/auth/tokens', {
+        method: 'POST',
+        body: { name, role: $('#at-role').value },
+      });
+      toast('Token creado. Guarda esta clave ahora: ' + r.token);
+      $('#at-name').value = '';
+      refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo crear', 'err'); }
+  };
+  document.querySelectorAll('[data-2fa]').forEach(btn => btn.onclick = async () => {
+    const username = btn.getAttribute('data-2fa');
+    const enabled = btn.getAttribute('data-2fa-enabled') === '1';
+    try {
+      if (enabled) {
+        if (!confirm(`¿Desactivar el segundo factor para ${username}?`)) return;
+        await api('/settings/auth/users', { method: 'POST', body: { username, totp_enabled: false, totp_secret: '' } });
+        toast('2FA desactivado'); refresh(true);
+      } else {
+        const r = await api('/settings/auth/2fa/new', { method: 'POST', body: { username } });
+        openModal('Activar 2FA', `
+          <p>1) Añade esta clave a Google Authenticator / Authy / Aegis:</p>
+          <div class="kbd" style="display:block;padding:10px;margin:8px 0;word-break:break-all">${esc(r.secret)}</div>
+          <p>2) Introduce un código de la app para comprobar que funciona:</p>
+          <div class="field"><label>Código de verificación</label><input id="2fa-verify" inputmode="numeric" maxlength="6" placeholder="000000"></div>
+          <p class="hint">Cada 30 segundos cambia. Ponlo con normalidad si aún no lo has añadido.</p>
+          <div class="row" style="justify-content:flex-end;gap:8px">
+            <button class="btn ghost" data-close>Cerrar</button>
+            <button class="btn primary" id="2fa-enable">Activar</button>
+          </div>`);
+        $('#modal-body').addEventListener('click', e => {
+          if (e.target.id === 'modal-close' || e.target.hasAttribute('data-close')) closeModal();
+        });
+        $('#2fa-enable').onclick = async () => {
+          const code = $('#2fa-verify').value.trim();
+          if (!code) return toast('Introduce el código de la app', 'warn');
+          const ok = await api('/settings/auth/2fa/verify', { method: 'POST', body: { username, code, secret: r.secret } });
+          if (!ok.ok) return toast('Código incorrecto; prueba a esperar al siguiente cambio', 'err');
+          await api('/settings/auth/users', { method: 'POST', body: { username, totp_enabled: true, totp_secret: r.secret } });
+          toast('2FA activado'); closeModal(); refresh(true);
+        };
+      }
+    } catch (e) { toast(e.message || 'No se pudo configurar 2FA', 'err'); }
+  });
+  document.querySelectorAll('[data-deluser]').forEach(btn => btn.onclick = async () => {
+    const username = btn.getAttribute('data-deluser');
+    if (!confirm(`¿Eliminar al usuario ${username}?`)) return;
+    try {
+      await api(`/settings/auth/users/${encodeURIComponent(username)}`, { method: 'DELETE' });
+      toast('Usuario eliminado'); refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo eliminar', 'err'); }
+  });
+  document.querySelectorAll('[data-deltoken]').forEach(btn => btn.onclick = async () => {
+    const name = btn.getAttribute('data-deltoken');
+    if (!confirm(`¿Eliminar el token ${name}?`)) return;
+    try {
+      await api(`/settings/auth/tokens/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      toast('Token eliminado'); refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo eliminar', 'err'); }
+  });
+  $('#remote-save').onclick = async () => {
+    try {
+      await api('/settings/general', {
+        method: 'PATCH',
+        body: { remote: {
+          https_enabled: !!(sec.remote && sec.remote.https_enabled) || false,
+          certfile: $('#remote-cert').value.trim(),
+          keyfile: $('#remote-key').value.trim(),
+          ddns: $('#remote-ddns').value.trim(),
+        } },
+      });
+      toast('Acceso remoto guardado'); refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo guardar', 'err'); }
+  };
+  (async () => {
+    try {
+      const remote = await api('/system/remote');
+      if ($('#remote-cert')) $('#remote-cert').value = remote.certfile || '';
+      if ($('#remote-key')) $('#remote-key').value = remote.keyfile || '';
+      if ($('#remote-ddns')) $('#remote-ddns').value = remote.ddns || '';
+      const list = [
+        'IP local: ' + (remote.local_ip || '—'),
+        'Puerto: ' + (remote.port || '—'),
+        remote.https_enabled ? 'HTTPS: activado con ' + remote.certfile : 'HTTPS: desactivado',
+        remote.tailscale ? 'Tailscale: ' + remote.tailscale : 'Tailscale: no detectado en este equipo',
+        remote.wireguard ? 'WireGuard interfaces: ' + remote.wireguard : '',
+        'DDNS: ' + (remote.ddns || '—'),
+      ].filter(Boolean);
+      $('#remote-box').innerHTML = '<b>' + esc(info.system_name || 'Vigía') + '</b><br>' + list.map(esc).join('<br>');
+    } catch { $('#remote-box').textContent = 'No se pudo consultar la red.'; }
+  })();
 
   // --- general ---
   $('#gn-save').onclick = async () => {

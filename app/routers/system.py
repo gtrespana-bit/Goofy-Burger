@@ -71,6 +71,36 @@ def info():
     }
 
 
+@router.get("/remote")
+def remote_info():
+    """Información para configurar acceso remoto (Tailscale/DDNS/HTTPS)."""
+    import subprocess
+
+    def _cmd(args):
+        try:
+            return subprocess.run(args, capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            return ""
+
+    tailscale_ip = _cmd(["tailscale", "ip", "-4"]) or _cmd(["tailscale", "ip"])
+    wireguard_ip = _cmd(["wg", "show", "interfaces"])
+    remote = config.data.get("general", {}).get("remote", {}) or {}
+    return {
+        "local_ip": discovery.local_ip(),
+        "port": config.data.get("server", {}).get("port", 8000),
+        "tailscale": tailscale_ip or None,
+        "wireguard": wireguard_ip or None,
+        "https_enabled": bool(remote.get("https_enabled")),
+        "certfile": remote.get("certfile", ""),
+        "ddns": remote.get("ddns", ""),
+        "guide": [
+            "Opción 1 (recomendada): instala Tailscale en este equipo y en tu móvil; con la IP 100.x.x.x accedes seguro sin abrir puertos.",
+            "Opción 2 (LAN): usa la IP local y el puerto del programa desde un dispositivo de la misma red.",
+            "Opción 3 (internet): haz DDNS + reenvío del puerto + HTTPS con certificado autogenerado o de Let's Encrypt.",
+        ],
+    }
+
+
 @router.get("/dashboard")
 def dashboard():
     """Resumen premium para el panel: cámaras, estado, eventos y almacenamiento."""

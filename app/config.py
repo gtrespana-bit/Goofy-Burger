@@ -74,9 +74,19 @@ def default_config() -> Dict[str, Any]:
             "timezone": None,
             "auth_enabled": False,
             "username": "admin",
-            "show_frame_overlay": True,
-            # Contraseña en texto plano (se guarda hash si se cambia desde la UI)
             "password_hash": "",
+            # Multi-usuario: cada uno con rol admin/visor y 2FA opcional.
+            "users": [],
+            # Tokens para scripts y Home Assistant.
+            "api_tokens": [],
+            "show_frame_overlay": True,
+            "remote": {
+                "https_enabled": False,
+                "certfile": "",
+                "keyfile": "",
+                "ddns": "",
+            },
+            # Contraseña en texto plano (se guarda hash si se cambia desde la UI)
         },
         "storage": {
             "recordings_dir": str(DATA_DIR / RECORDINGS_DIRNAME),

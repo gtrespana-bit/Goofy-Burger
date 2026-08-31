@@ -153,6 +153,10 @@ def _run_main() -> None:
                         help="No abrir ninguna ventana ni navegador al arrancar")
     parser.add_argument("--browser", action="store_true",
                         help="Usar el navegador en vez de la ventana propia (requiere pywebview)")
+    parser.add_argument("--ssl-certfile", default="",
+                        help="Certificado TLS/HTTPS (junto a --ssl-keyfile)")
+    parser.add_argument("--ssl-keyfile", default="",
+                        help="Clave privada TLS/HTTPS")
     args = parser.parse_args()
 
     if args.lan:
@@ -168,6 +172,21 @@ def _run_main() -> None:
     # app.main de forma garantizada (con la cadena, la app dependía solo de
     # hiddenimports y el .exe instalado daba "No module named 'app.main'").
     from app.main import app as fastapi_app
+
+    # HTTPS: puede venir por CLI o desde Ajustes → Acceso remoto.
+    ssl_certfile = args.ssl_certfile
+    ssl_keyfile = args.ssl_keyfile
+    if not ssl_certfile:
+        try:
+            from app.config import config as vigia_config
+            remote = vigia_config.data.get("general", {}).get("remote", {}) or {}
+            ssl_certfile = remote.get("certfile", "") or ""
+            ssl_keyfile = remote.get("keyfile", "") or ""
+        except Exception:
+            pass
+    ssl_certfile = ssl_certfile.strip() or None
+    ssl_keyfile = ssl_keyfile.strip() or None
+    scheme = "https" if (ssl_certfile and ssl_keyfile) else "http"
 
     if args.reload:
         import uvicorn
@@ -199,6 +218,8 @@ def _run_main() -> None:
         log_level="info",
         access_log=False,
         use_colors=False,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
     server = uvicorn.Server(config)
     thread_errors: list[str] = []
@@ -222,7 +243,7 @@ def _run_main() -> None:
 
     if not server.started:
         detail = (
-            f"Servidor en http://{args.host}:{args.port}\n"
+            f"Servidor en {scheme}://{args.host}:{args.port}\n"
             "Posible causa: el puerto ya esta en uso o la inicio fallo.\n\n"
             "Si el puerto 8000 esta ocupado, cierra otro Vigia o lanzalo con:\n"
             "Vigia.exe --port 8001"
@@ -231,7 +252,7 @@ def _run_main() -> None:
             detail += "\n\nDetalle del error:\n" + thread_errors[-1]
         raise RuntimeError(detail)
 
-    url = f"http://127.0.0.1:{args.port}/"
+    url = f"{scheme}://127.0.0.1:{args.port}/"
 
     # Por defecto, la app se abre en su propia ventana de escritorio (pywebview).
     # Sólo usamos el navegador si se pide con --browser, con --no-browser, o si
