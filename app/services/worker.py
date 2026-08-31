@@ -23,6 +23,7 @@ from ..events_store import make_event
 from .capture import build_source
 from .detector import AIDetector, MotionDetector
 from .framebus import frame_bus
+from .pusher import send_push
 from .recorder import ClipRecorder, SegmentRecorder
 from .tracker import ObjectTracker
 
@@ -740,6 +741,16 @@ class CameraWorker(threading.Thread):
                 f"cruzó hacia {meta.get('direction', 'desconocido')}\n"
                 f"Objeto: {meta.get('track_id', '')} · confianza {event['score']}%"
             )
+
+        # Web Push real al móvil (PWA instalada + HTTPS). Se lanza en un hilo
+        # para no bloquear la detección esperando al servicio push.
+        def _push_worker():
+            try:
+                send_push(title, body, "/#/events")
+            except Exception as exc:
+                log.warning("Push web fallido: %s", exc)
+        threading.Thread(target=_push_worker, daemon=True).start()
+
         channels = alerts.get("channels") or None
         try:
             future = self.notifier.send_async(title, body, image, channels)

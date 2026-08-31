@@ -32,6 +32,7 @@ PREMIUM_FEATURES = [
     "Seguimiento de objetos y cruce de líneas virtuales con IA",
     "Informes semanales por cámara, día y tipo de evento",
     "Notificaciones Telegram, ntfy, webhook, Discord, Pushover y email",
+    "Push real al móvil (Web Push) y alarma sonora en pantalla",
     "Control PTZ y presets ONVIF",
     "Analítica de eventos y gestión de almacenamiento",
     "Exportación/importación de configuración y autenticación Basic",

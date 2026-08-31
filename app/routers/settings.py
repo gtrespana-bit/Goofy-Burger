@@ -18,6 +18,7 @@ UPDATABLE = ("general", "storage", "detection", "recording", "notifications")
 @router.get("")
 def get_settings():
     data = config.snapshot()
+    data.pop("push", None)  # claves VAPID y suscripciones privadas
     data["_meta"] = {
         "updatable_sections": list(UPDATABLE),
         "data_dir": str(config.path.parent),
@@ -208,6 +209,7 @@ def export_config():
     import json
 
     data = copy.deepcopy(config.snapshot())
+    data.pop("push", None)  # claves VAPID y suscripciones: no se exportan
     general = data.setdefault("general", {})
     general.pop("password_hash", None)
     for user in general.get("users", []):

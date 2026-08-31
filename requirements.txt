@@ -20,5 +20,9 @@ imageio-ffmpeg>=0.4.9
 # navegador. En macOS/Linux se puede usar igual si el entorno lo soporta.
 pywebview>=5.0; platform_system == "Windows"
 
+# --- Opcional (recomendado): notificaciones push reales al móvil (Web Push)
+# Descomenta para recibir notificaciones nativas en la PWA instalada:
+pywebpush>=1.14.0
+
 # --- Opcional (recomendado): detección con IA (personas / vehículos / mascotas)
 # ultralytics>=8.1

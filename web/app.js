@@ -68,6 +68,128 @@ function toast(msg, kind = '') {
 }
 
 /* ------------------------------------------------------------------ */
+/* PWA: instalación, push y sonido de alarma                           */
+/* ------------------------------------------------------------------ */
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+let alarmCtx = null;
+function playAlarm(style = 'siren') {
+  if (state.alarmMuted) return;
+  try {
+    alarmCtx = alarmCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (alarmCtx.state === 'suspended') alarmCtx.resume();
+    const now = alarmCtx.currentTime;
+    const gain = alarmCtx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(state.settings.notifications?.alarm_volume ?? 0.65, now + 0.02);
+    gain.gain.setValueAtTime(state.settings.notifications?.alarm_volume ?? 0.65, now + 1.0);
+    gain.gain.linearRampToValueAtTime(0, now + 1.35);
+    gain.connect(alarmCtx.destination);
+    if (style === 'beep') {
+      for (let i = 0; i < 3; i++) {
+        const os = alarmCtx.createOscillator();
+        os.type = 'square';
+        os.frequency.value = 880;
+        os.connect(gain);
+        os.start(now + i * 0.35);
+        os.stop(now + i * 0.35 + 0.18);
+      }
+    } else {
+      const os = alarmCtx.createOscillator();
+      os.type = 'sawtooth';
+      os.frequency.setValueAtTime(650, now);
+      os.frequency.linearRampToValueAtTime(1250, now + 0.45);
+      os.frequency.linearRampToValueAtTime(650, now + 0.9);
+      os.frequency.linearRampToValueAtTime(1250, now + 1.35);
+      os.connect(gain);
+      os.start(now);
+      os.stop(now + 1.4);
+    }
+  } catch { /* sin audio disponible */ }
+}
+
+async function subscribePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) return false;
+  const st = state.push.status;
+  if (!st || !st.available || !st.enabled || !st.public_key) return false;
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(st.public_key),
+    });
+    await api('/push/subscribe', {
+      method: 'POST',
+      body: { subscription: sub.toJSON(), user_agent: navigator.userAgent },
+    });
+    state.push.subscriber = sub;
+    return true;
+  } catch (e) {
+    console.error('No se pudo suscribir a push:', e);
+    return false;
+  }
+}
+
+async function setupPush() {
+  if (!('serviceWorker' in navigator)) return;
+  try {
+    state.push.status = await api('/push/status', { silent401: true });
+    await subscribePush();
+  } catch (e) { /* sin backend push accesible */ }
+}
+
+function setupPwa() {
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    state.installPrompt = e;
+    const btn = $('#btn-install');
+    if (btn) { btn.style.display = ''; btn.onclick = async () => {
+      if (!state.installPrompt) return;
+      state.installPrompt.prompt();
+      await state.installPrompt.userChoice;
+      btn.style.display = 'none';
+    }; }
+  });
+  window.addEventListener('appinstalled', () => {
+    toast('Vigía instalado. Ya puedes lanzarlo desde tu dispositivo.');
+    const btn = $('#btn-install');
+    if (btn) btn.style.display = 'none';
+  });
+  if (navigator.standalone) {
+    const btn = $('#btn-install');
+    if (btn) btn.style.display = 'none';
+  }
+  const alarmBtn = $('#btn-alarm');
+  if (alarmBtn) alarmBtn.onclick = () => {
+    state.alarmMuted = !state.alarmMuted;
+    localStorage.setItem('vigia-alarm-muted', state.alarmMuted ? '1' : '0');
+    renderTopbar();
+    toast(state.alarmMuted ? 'Sonido de alarma silenciado' : 'Sonido de alarma activado');
+  };
+  // Puede venir de una página abierta antes de recargar: al autenticarnos ya
+  // hay permiso, así que intentamos suscribir tras el arranque.
+  setupPush();
+}
+
+function alarmWanted(ev) {
+  const n = state.settings.notifications || {};
+  if (!n.alarm_enabled || state.alarmMuted) return false;
+  const cam = state.cameras.find(c => c.id === ev.camera_id);
+  if (cam?.alerts?.alarm_enabled === false) return false;
+  const labels = (cam?.alerts?.labels || []).map(s => String(s).toLowerCase());
+  if (labels.length && !labels.includes(String(ev.label || 'motion').toLowerCase())) return false;
+  return true;
+}
+
+/* ------------------------------------------------------------------ */
 /* Estado                                                              */
 /* ------------------------------------------------------------------ */
 const state = {
@@ -82,6 +204,9 @@ const state = {
   lastEventTs: null,
   multiview: { layout: 'auto', order: JSON.parse(localStorage.getItem('vigia-multiview-order') || '[]') },
   auth: { enabled: false, user: null, running: false },
+  alarmMuted: localStorage.getItem('vigia-alarm-muted') === '1',
+  push: { status: null, subscriber: null },
+  installPrompt: null,
 };
 
 /* ------------------------------------------------------------------ */
@@ -187,6 +312,7 @@ async function startApp() {
 
     await refresh(true);
     await route();
+    setupPush();
     setInterval(() => refresh(false), 5000);
     setInterval(checkNewEvents, 6000);
   } catch (err) {
@@ -242,6 +368,7 @@ function showLogin() {
 }
 
 async function boot() {
+  setupPwa();
   try {
     const st = await api('/auth/status', { silent401: true });
     state.auth.enabled = !!st.auth_enabled;
@@ -328,6 +455,14 @@ function renderTopbar() {
     logout.style.display = state.auth.enabled ? '' : 'none';
     logout.title = state.auth.user?.username?.startsWith('token:') ? 'Token de API no intercambiable' : 'Cerrar sesión';
   }
+  const alarm = $('#btn-alarm');
+  if (alarm) {
+    alarm.textContent = state.alarmMuted ? '🔕' : '🔔';
+    alarm.title = state.alarmMuted ? 'Activar sonido de alarma' : 'Silenciar alarma';
+    alarm.classList.toggle('muted', state.alarmMuted);
+  }
+  const install = $('#btn-install');
+  if (install && !state.installPrompt) install.style.display = 'none';
 }
 
 /* ------------------------------------------------------------------ */
@@ -1170,6 +1305,7 @@ async function checkNewEvents() {
         card.classList.add('motion-alert', 'flash');
         setTimeout(() => card.classList.remove('motion-alert'), 7000);
       }
+      if (alarmWanted(ev)) playAlarm(state.settings.notifications?.alarm_style || 'siren');
     }
     state.lastEventTs = ev.ts;
   } catch { /* silencioso */ }
@@ -1400,7 +1536,9 @@ async function renderSettings() {
   const info = state.info;
   const canAdmin = !state.auth.enabled || state.auth.user?.role === 'admin';
   let sec = { auth_enabled: false, users: [], api_tokens: [], remote: {} };
-  if (canAdmin) { try { sec = await api('/settings/auth/status'); } catch { /* panel simple */ } }
+  let pushSt = { available: false, enabled: false, public_key: '', subscriptions: 0, hint: '' };
+  if (canAdmin) { try { sec = await api('/settings/auth/status'); } catch { /* panel simple */ }
+    try { pushSt = await api('/push/status'); } catch { /* push opcional */ } }
   $('#view').innerHTML = `
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr))">
 
@@ -1427,6 +1565,30 @@ async function renderSettings() {
       <div class="field"><label>Espera mínima entre avisos (s)</label>
         <input type="number" min="0" id="nt-cool" value="${s.notifications?.cooldown_seconds ?? 60}"></div>
       <label class="checkline"><input type="checkbox" id="nt-img" ${s.notifications?.attach_snapshot ? 'checked' : ''}> Adjuntar imagen del evento</label>
+
+      <div class="divider"></div>
+      <h4>🔊 Alarma sonora</h4>
+      <label class="checkline"><input type="checkbox" id="alarm-on" ${s.notifications?.alarm_enabled !== false ? 'checked' : ''}> Sonar cuando llega un evento nuevo</label>
+      <div class="form-grid">
+        <div class="field"><label>Volumen</label><input type="number" min="0" max="1" step="0.05" id="alarm-vol" value="${s.notifications?.alarm_volume ?? 0.65}"></div>
+        <div class="field"><label>Sonido</label>
+          <select id="alarm-style">
+            <option value="siren" ${(s.notifications?.alarm_style || 'siren') === 'siren' ? 'selected' : ''}>Sirena</option>
+            <option value="beep" ${(s.notifications?.alarm_style || 'siren') === 'beep' ? 'selected' : ''}>Bip-bip</option>
+          </select></div>
+      </div>
+      <button class="btn sm" id="alarm-test">Probar sonido</button>
+
+      <div class="divider"></div>
+      <div id="push-panel">
+        <h4>📱 Push real al móvil (Web Push)</h4>
+        <div id="push-box" class="muted">Comprobando…</div>
+        <div class="row" style="margin-top:8px">
+          <button class="btn sm" id="push-setup">Activar claves</button>
+          <button class="btn sm primary" id="push-subscribe">Suscribir este dispositivo</button>
+          <button class="btn sm ghost" id="push-test">Enviar prueba</button>
+        </div>
+      </div>
 
       <div class="divider"></div>
       <h4>Telegram</h4>
@@ -1609,9 +1771,11 @@ async function renderSettings() {
     </div>
   </div>`;
 
-  // Viewer: no puede administrar usuarios ni tokens.
+  // Viewer: no puede administrar usuarios, tokens ni push.
   const secPanel = $('#sec-panel');
   if (secPanel && !canAdmin) secPanel.remove();
+  const pushPanel = $('#push-panel');
+  if (pushPanel && !canAdmin) pushPanel.remove();
 
   // --- almacenamiento ---
   $('#st-save').onclick = async () => {
@@ -1638,6 +1802,9 @@ async function renderSettings() {
         enabled: $('#nt-on').checked,
         cooldown_seconds: +$('#nt-cool').value,
         attach_snapshot: $('#nt-img').checked,
+        alarm_enabled: $('#alarm-on').checked,
+        alarm_volume: +$('#alarm-vol').value,
+        alarm_style: $('#alarm-style').value,
         telegram: { enabled: $('#tg-on').checked, bot_token: $('#tg-token').value, chat_id: $('#tg-chat').value },
         ntfy: { enabled: $('#nf-on').checked, server: $('#nf-server').value, topic: $('#nf-topic').value, token: $('#nf-token').value },
         webhook: { enabled: $('#wh-on').checked, url: $('#wh-url').value },
@@ -1659,6 +1826,59 @@ async function renderSettings() {
     if (!keys.length) return toast('Ningún canal activo', 'warn');
     keys.forEach(k => toast(`${k}: ${results[k] === 'ok' ? 'enviado ✓' : results[k]}`, results[k] === 'ok' ? '' : 'err'));
   };
+
+  // --- alarma sonora y push ---
+  $('#alarm-test').onclick = () => playAlarm($('#alarm-style').value);
+  (() => {
+    const box = $('#push-box');
+    if (!box) return;
+    const setPushBox = () => {
+      box.innerHTML = pushSt.available
+        ? `${pushSt.enabled ? '✅' : '—'} activado · ${pushSt.subscriptions} dispositivo(s).<br><span class="muted">${esc(pushSt.hint || '')}</span>`
+        : `<span style="color:var(--warn,#ffb454)">⚠ pywebpush no instalado.</span>`;
+    };
+    setPushBox();
+    $('#push-setup').onclick = async () => {
+      try {
+        const r = await api('/push/setup', { method: 'POST', body: {} });
+        pushSt = { ...pushSt, enabled: true, public_key: r.public_key };
+        setPushBox();
+        toast('Push activado. Suscribe este dispositivo.');
+        if (typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+          const p = await Notification.requestPermission();
+          if (p !== 'granted') toast('Permiso de notificaciones denegado', 'warn');
+        }
+        state.push.status = pushSt;
+        const okSub = await subscribePush();
+        if (okSub) { const d = await api('/push/status'); pushSt = d; setPushBox(); toast('Dispositivo suscrito al push'); }
+      } catch (e) { toast(e.message || 'No se pudo activar push', 'err'); }
+    };
+    $('#push-subscribe').onclick = async () => {
+      try {
+        if (typeof Notification === 'undefined') { toast('Este navegador no soporta notificaciones', 'warn'); return; }
+        if (Notification.permission !== 'granted') {
+          const p = await Notification.requestPermission();
+          if (p !== 'granted') { toast('Permiso denegado', 'warn'); return; }
+        }
+        if (!pushSt.enabled || !pushSt.public_key) {
+          const r = await api('/push/setup', { method: 'POST', body: {} });
+          pushSt = { ...pushSt, enabled: true, public_key: r.public_key };
+        }
+        state.push.status = pushSt;
+        const ok = await subscribePush();
+        if (!ok) { toast('No se pudo suscribir. Usa HTTPS o localhost para Web Push.', 'err'); return; }
+        const d = await api('/push/status');
+        pushSt = d; setPushBox();
+        toast('Dispositivo suscrito. Recibirás las alertas aunque la pestaña esté cerrada.');
+      } catch (e) { toast(e.message || 'No se pudo suscribir', 'err'); }
+    };
+    $('#push-test').onclick = async () => {
+      try {
+        const r = await api('/push/test', { method: 'POST', body: {} });
+        toast(r.sent ? `Push enviado a ${r.sent} dispositivo(s)` : (r.skipped ? 'Sin dispositivos suscritos' : 'Push no enviado'));
+      } catch (e) { toast(e.message || 'No se pudo probar push', 'err'); }
+    };
+  })();
 
   // --- detección ---
   $('#dt-save').onclick = async () => {
@@ -2556,6 +2776,7 @@ async function cameraSettings(id) {
     <h4>🔔 Alertas premium</h4>
     <div class="form-grid">
       <label class="checkline"><input type="checkbox" id="c-alerts" ${alerts.enabled ? 'checked' : ''}> Enviar avisos</label>
+      <label class="checkline"><input type="checkbox" id="c-alarm" ${alerts.alarm_enabled !== false ? 'checked' : ''}> Sonar alarma en pantalla</label>
       <label class="checkline"><input type="checkbox" id="c-away" ${alerts.only_when_away ? 'checked' : ''}> Sólo fuera de casa</label>
       <div class="field"><label>Canales (vacío=todos)</label><input id="c-channels" value="${esc((alerts.channels || []).join(','))}" placeholder="telegram,ntfy,discord,email"></div>
       <div class="field"><label>Sólo etiquetas (vacío=todas)</label><input id="c-labels" value="${esc((alerts.labels || []).join(','))}" placeholder="person,car"></div>
@@ -2658,6 +2879,7 @@ async function cameraSettings(id) {
     };
     payload.alerts = {
       enabled: $('#c-alerts').checked,
+      alarm_enabled: $('#c-alarm').checked,
       only_when_away: $('#c-away').checked,
       channels: $('#c-channels').value.split(',').map(s => s.trim()).filter(Boolean),
       labels: $('#c-labels').value.split(',').map(s => s.trim()).filter(Boolean),

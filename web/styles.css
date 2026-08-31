@@ -249,3 +249,11 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .rep-bar .cross{font-size:11px;color:var(--warn,#ffb454)}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .tags .tag{font-size:11px;padding:2px 8px}
+.btn.muted{opacity:.55;color:var(--txt-faint)}
+@media (max-width:720px){
+  .topbar{flex-wrap:wrap;gap:8px}
+  .topstats{order:3;width:100%;justify-content:space-between}
+  .topactions{flex-wrap:wrap;justify-content:flex-end}
+  .panel{padding:14px}
+  .detail{grid-template-columns:1fr}
+}

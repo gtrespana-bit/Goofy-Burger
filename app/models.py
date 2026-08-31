@@ -208,6 +208,7 @@ class AlertConfig(BaseModel):
     only_when_away: bool = False
     labels: List[str] = Field(default_factory=list)    # vacío = todas las etiquetas
     max_per_hour: int = 0                               # 0 = sin límite
+    alarm_enabled: bool = True
 
 
 class CameraBase(BaseModel):

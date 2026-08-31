@@ -1,6 +1,6 @@
 /* Vigía Pro — service worker para la PWA (app instalable y arranque offline de la UI) */
-const CACHE = 'vigia-pro-v2';
-const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json', '/favicon.png'];
+const CACHE = 'vigia-pro-v3';
+const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json', '/favicon.png', '/icon-192.png', '/icon-512.png'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -33,4 +33,32 @@ self.addEventListener('fetch', (event) => {
       return res;
     }))
   );
+});
+
+self.addEventListener('push', (event) => {
+  let data = { title: '🔔 Vigía Pro', body: 'Nuevo evento', url: '/#/events' };
+  try { if (event.data) data = { ...data, ...event.data.json() }; } catch { /* text */ }
+  const options = {
+    body: data.body || 'Nuevo evento',
+    icon: '/icon-192.png',
+    badge: '/favicon.png',
+    vibrate: [120, 60, 120],
+    tag: 'vigia-' + (data.tag || Date.now()),
+    data: { url: data.url || '/#/events' },
+  };
+  event.waitUntil(self.registration.showNotification(data.title || '🔔 Vigía Pro', options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = event.notification.data?.url || '/#/events';
+  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    for (const client of list) {
+      if ('focus' in client) {
+        client.navigate(url);
+        return client.focus();
+      }
+    }
+    return clients.openWindow(url);
+  }));
 });

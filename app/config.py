@@ -151,6 +151,9 @@ def default_config() -> Dict[str, Any]:
             "enabled": True,
             "cooldown_seconds": 60,
             "attach_snapshot": True,
+            "alarm_enabled": True,
+            "alarm_volume": 0.65,
+            "alarm_style": "siren",
             "telegram": {"enabled": False, "bot_token": "", "chat_id": ""},
             "ntfy": {
                 "enabled": False,
@@ -171,6 +174,13 @@ def default_config() -> Dict[str, Any]:
                 "from": "",
                 "to": "",
             },
+        },
+        "push": {
+            "enabled": False,
+            "vapid_public_key": "",
+            "vapid_private_key": "",
+            "vapid_subject": "mailto:admin@vigia.local",
+            "subscriptions": [],
         },
         "cameras": [],
     }
