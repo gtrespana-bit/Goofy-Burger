@@ -39,6 +39,40 @@ except Exception as exc:  # pragma: no cover - entorno
     DVRIP_ERROR = str(exc)
 
 
+def _patch_dvrip_login_reply() -> None:
+    """Compatibilidad con cámaras que omiten ``AliveInterval`` en el login.
+
+    Algunas cámaras iCSee/XMEye responden al login **sin** el campo
+    ``AliveInterval`` (intervalo de keep-alive). La librería `dvrip` lo declara
+    como obligatorio y lanza ``DVRIPDecodeError: no member 'AliveInterval'``;
+    como el login nunca termina, la cámara no abre y el worker entra en un
+    bucle de reconexión sin fin (spam de errores + carga continua).
+
+    Inyectamos un valor por defecto en la respuesta antes de decodificarla,
+    con lo que el login completa y el resto de campos (canales, vistas…) se
+    leen con normalidad.
+    """
+    try:
+        from dvrip import login as _dvrip_login
+
+        _orig_json_to = _dvrip_login.ClientLoginReply.json_to.__func__
+
+        @classmethod
+        def _json_to_tolerant(cls, datum):
+            if isinstance(datum, dict) and "AliveInterval" not in datum:
+                datum = dict(datum)
+                datum["AliveInterval"] = 30  # segundos de keep-alive
+            return _orig_json_to(cls, datum)
+
+        _dvrip_login.ClientLoginReply.json_to = _json_to_tolerant
+    except Exception:  # pragma: no cover - librería con otra forma interna
+        pass
+
+
+if DVRIP_AVAILABLE:
+    _patch_dvrip_login_reply()
+
+
 # `import dvrip` se ejecutaba en CADA petición de /system/info y /diagnostics.
 # La disponibilidad de la librería no cambia mientras el servidor corre, así
 # que se comprueba una vez y se cachea.

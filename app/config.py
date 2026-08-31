@@ -222,22 +222,43 @@ def _clean_camera_url(url: str) -> str:
 def camera_source_key(cam: Dict[str, Any]) -> Tuple:
     """Clave del dispositivo-canal real de una cámara.
 
-    Sirve para no crear/arrancar el mismo dispositivo-canal dos veces
-    (el motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
+    Sirve para no crear/arrancar el mismo dispositivo-canal dos veces (el
+    motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
     multi-lente).
+
+    La misma lente puede estar guardada como cámara RTSP (``rtsp://…
+    channel=N``, donde el canal es 1-based y el 0 es el mosaico) o como
+    DVRIP/NetIP (``channel`` 0-based). Unificamos ambas a ``(host, índice de
+    lente 0-based)`` para que una lente añadida dos veces por vías distintas se
+    detecte como duplicada y se conserve una sola copia.
     """
     st = cam.get("source_type") or "rtsp"
     if st == "dvrip":
         dv = cam.get("dvrip") or {}
-        return ("dvrip", str(dv.get("host", "")).lower(), int(dv.get("channel", -1) or -1))
+        host = str(dv.get("host", "")).strip().lower()
+        channel = int(dv.get("channel", -1) or -1)  # 0-based (0 = primera lente)
+        return ("lens", host, channel)
+
     url = cam.get("url") or ""
-    host = (urlsplit(url).hostname or "").lower()
-    if host:
-        m = re.search(r"[?&_]channel=(\d+)", url, re.I)
-        if m:
-            return ("channel", host, m.group(1))
-        return ("url", host, _clean_camera_url(url))
-    return ("url", "", _clean_camera_url(url))
+    host = (urlsplit(url).hostname or "").strip().lower()
+    if not host:
+        return ("url", "", _clean_camera_url(url))
+
+    # URL dvrip://host:port/channel=N -> N es 1-based
+    if urlsplit(url).scheme.lower() == "dvrip":
+        m = re.search(r"channel=(\d+)", url, re.I)
+        channel = int(m.group(1)) - 1 if m else -1
+        return ("lens", host, channel)
+
+    m = re.search(r"[?&_]channel=(\d+)", url, re.I)
+    if m:
+        ch = int(m.group(1))
+        if ch > 0:
+            # RTSP iCSee: canal 1..N = lente 1..N -> índice 0-based
+            return ("lens", host, ch - 1)
+        # canal 0 = vista combinada (mosaico): identidad propia
+        return ("mosaic", host)
+    return ("url", host, _clean_camera_url(url))
 
 
 def _camera_quality(cam: Dict[str, Any]) -> int:
