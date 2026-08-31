@@ -2895,6 +2895,10 @@ function cameraWizard() {
     try {
       const r = await api('/system/diagnose', {
         method: 'POST',
+        // El diagnóstico sondea puertos, RTSP, DVRIP y ONVIF; puede tardar
+        // más que una petición normal. Le damos margen real para que no salte
+        // el timeout de red de 15 s antes de que el backend termine.
+        timeout: 90000,
         body: { mode: 'diagnose', target: ip, username: $('#w-dis-user').value, password: $('#w-dis-pass').value },
       });
       const ports = (r.ports || []);

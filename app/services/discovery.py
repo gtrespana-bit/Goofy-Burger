@@ -530,10 +530,14 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
                     "'Añadir los N' para darlas de alta como cámaras independientes."
                 )
             elif dv.get("hints"):
+                # Pasamos las pistas concretas de dvrip.probe (bloqueado por
+                # exceso de intentos, credenciales incorrectas, sesión abierta…)
+                # en lugar de un mensaje genérico.
+                for h in dv.get("hints"):
+                    report["hints"].append(h)
                 report["hints"].append(
-                    "El puerto DVRIP 34567 está abierto pero la autenticación no "
-                    "es válida con esas credenciales. Prueba la cuenta de la app "
-                    "o admin con su contraseña."
+                    "El puerto DVRIP 34567 está abierto. Prueba la cuenta de la "
+                    "app iCSee o admin con su contraseña."
                 )
         except Exception as exc:
             report["hints"].append(f"Error sondeando DVRIP/NetIP: {type(exc).__name__}: {exc}")
