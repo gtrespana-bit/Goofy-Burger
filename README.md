@@ -122,20 +122,22 @@ URLs típicas:
 > con la que entras en la app iCSee. Vigía las detecta y sondea automáticamente.
 >
 > Las cámaras **multi-lente** (p. ej. "2 en 1" o "3 en 1") exponen cada lente
-> como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, sobre todo, como
-> un **perfil ONVIF** independiente en el puerto **8899** con su propia URL
-> RTSP. La forma más fiable de detectarlas **todas** es el **🔧 Diagnosticar
-> iCSee**: si el 8899 está abierto, Vigía enumera los perfiles ONVIF (uno por
-> lente) y te ofrece **"➕ Añadir los N"** para darlas de alta todas de golpe,
-> cada lente como **cámara independiente** (con su propio directo, detección,
-> grabación y PTZ). Si además el firmware expone el canal 0 por RTSP, ese es el
-> **mosaico** (todas las lentes en una sola imagen).
+> como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, normalmente,
+> como un **perfil ONVIF** independiente con su propia URL RTSP. La forma más
+> fiable de detectarlas **todas** es el **🔧 Diagnosticar iCSee**: Vigía
+> agrupa automáticamente los canales RTSP detectados (Lente 1/2/3, y canal 0 si
+> es el mosaico) y, además, prueba ONVIF en **8899, 80, 8080 y 8000** para leer
+> los perfiles (uno por lente). En la sección **📷 Cámara multi-lente** hay un
+> botón **"➕ Añadir los N"** que da de alta todas las lentes de golpe, cada una
+> como **cámara independiente** (directo, detección, grabación y, si corresponde,
+> PTZ).
 >
-> **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF en el
-> puerto 8899** (cuenta `admin`, no la de la app). Vigía lo configura solo al
-> añadir una cámara iCSee (ONVIF va incluido en el programa). Algunas iCSee
-> multi-lente no traen ONVIF y sólo hablan su protocolo propietario (NetIP/DVRIP
-> por el puerto 34567); en ese caso el PTZ no está disponible vía ONVIF.
+> **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF**
+> (Vigía prueba automáticamente 8899, 80, 8080 y 8000; cuenta `admin`, no la de
+> la app). Al añadir las lentes detectadas, Vigía activa PTZ sólo en la lente
+> giratoria y usa su token de perfil correcto. Algunas iCSee multi-lente no
+> traen ONVIF y sólo hablan su protocolo propietario (NetIP/DVRIP por el puerto
+> 34567); en ese caso el PTZ no está disponible vía ONVIF.
 >
 > **Detección de movimiento**: la hace Vigía analizando el vídeo (sustractor de
 > fondo, con sensibilidad y zonas), así que no necesitas activar nada en la app
@@ -155,8 +157,9 @@ Pasos:
 
 1. En el asistente «Añadir cámara» escribe la IP de tu cámara en el campo
    **«IP de la cámara»** y pulsa **🔧 Diagnosticar iCSee**. Vigía comprobará
-   los puertos (RTSP 554, ONVIF 8899, web 80…) y sondeará todas las variantes
-   RTSP con varias cuentas, y te dirá exactamente por qué no hay imagen.
+   los puertos (RTSP 554, ONVIF 8899/80/8080/8000, web 80…) y sondeará todas
+   las variantes RTSP (incluidos `channel=1..4` y `channel=0`) con varias
+   cuentas, y te dirá exactamente por qué no hay imagen.
 2. Si el diagnóstico dice que **RTSP (554) está cerrado**: entra por la web
    (`http://IP/`) o en la app iCSee → ajustes del dispositivo y **activa RTSP**
    (puerto 554); reinicia la cámara y vuelve a diagnosticar.
@@ -165,9 +168,10 @@ Pasos:
    `rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream`
    (la `password` se deja vacía; si le pusiste contraseña a `admin`, ponla).
 4. Si es **multi-lente y solo ves la principal**: el diagnóstico te mostrará
-   la sección **📷 Cámara multi-lente** con **"➕ Añadir los N"** (detectada vía
-   ONVIF en el 8899). Púlsalo y añadirá todas las lentes de una vez, cada una
-   como cámara independiente **con sus botones de mover (PTZ)**.
+   la sección **📷 Cámara iCSee 3 en 1 / multi-lente** con **"➕ Añadir los N"**
+   (agrupando los canales RTSP y, si es posible, los perfiles ONVIF). Púlsalo y
+   añadirá todas las lentes de una vez, cada una como cámara independiente **y
+   con PTZ sólo en la lente giratoria**.
 5. Pega la URL en **«URL RTSP»** y pulsa **Probar conexión** para ver una foto
    real antes de guardar.
 

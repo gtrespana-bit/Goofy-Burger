@@ -1166,14 +1166,17 @@ function cameraWizard() {
   // ---- autodescubrimiento ----
   // Detecta si una URL es de una cámara iCSee/XMEye (credenciales en la ruta).
   function isIcseeUrl(u) {
-    return /user=[^&/?\s]*&password=/i.test(u) || /user=[^_?\s]*_password=/i.test(u);
+    return /user=[^&/?\s]*&(?:password|passwd)=/i.test(u) ||
+           /user=[^_?\s]*(?:_password|_passwd)=/i.test(u) ||
+           /(?:^|[?&_])user=.*(?:^|[?&_])(?:password|passwd)=/i.test(u);
   }
-  // Extrae host y credenciales de una URL iCSee/XMEye (user=..&password=..).
+  // Extrae host y credenciales de una URL iCSee/XMEye (user=..&password=..,
+  // user=.._password=.., user=.._passwd=..).
   function icseeInfo(u) {
     let host = '';
     try { host = new URL(u).hostname; } catch {}
     const um = /(?:^|[?&_/])user=([^&_?\s]*)/i.exec(u);
-    const pm = /(?:^|[?&_])password=([^&_?\s]*)/i.exec(u);
+    const pm = /(?:^|[?&_])?(?:password|passwd)=([^&_?\s]*)/i.exec(u);
     return { host, username: um ? decodeURIComponent(um[1]) : '', password: pm ? decodeURIComponent(pm[1]) : '' };
   }
 
@@ -1198,22 +1201,26 @@ function cameraWizard() {
     return { groups: sorted, leftover };
   }
 
-  function onvifConfigFor(url) {
+  function onvifConfigFor(url, port = 8899, username = '', password = '') {
     const info = icseeInfo(url);
+    const user = username || info.username;
+    const pass = password !== undefined ? password : info.password;
     return {
       enabled: true,
       host: info.host,
-      port: 8899,               // iCSee/XMEye expone ONVIF en 8899
-      username: info.username,
-      password: info.password,
+      port: +(port || 8899),   // iCSee/XMEye suele usar 8899, pero probamos 80/8080/8000
+      username: user,
+      password: pass,
       profile_token: '',
     };
   }
 
   // Crea una cámara por cada canal/lente detectado. Las URLs ya traen las
   // credenciales embebidas (user=..&password=..), así que no las pisamos.
-  // Para cámaras iCSee/XMEye activa ONVIF (puerto 8899) para mover/zoom (PTZ).
-  async function addAllChannels(groups) {
+  // Para cámaras iCSee/XMEye activa ONVIF en el puerto detectado para
+  // mover/zoom (PTZ); si sólo una lente es giratoria, ese canal recibe el
+  // token del perfil PTZ.
+  async function addAllChannels(groups, onvifInfo = null) {
     const base = $('#w-name').value.trim() || 'Cámara';
     const grp = $('#w-group').value.trim() || 'General';
     const icsee = groups.some(g => isIcseeUrl(g.main || g.sub));
@@ -1227,14 +1234,31 @@ function cameraWizard() {
         url,
         substream_url: g.sub || '',
       };
-      if (icsee) payload.onvif = onvifConfigFor(url);
+      if (onvifInfo && onvifInfo.onvif_port) {
+        // Si conocemos el puerto ONVIF, sólo activamos PTZ en la lente que
+        // realmente lo soporta (si el backend nos lo indicó). Para la lente
+        // giratoria usamos su token; para las fijas lo dejamos vacío.
+        const knowPtz = typeof onvifInfo.has_ptz === 'boolean';
+        const enablePtz = knowPtz ? !!g.has_ptz : true;
+        payload.onvif = {
+          enabled: enablePtz,
+          host: onvifInfo.host || icseeInfo(url).host,
+          port: +onvifInfo.onvif_port || 8899,
+          username: onvifInfo.username || '',
+          password: onvifInfo.password || '',
+          profile_token: (g.has_ptz ? (g.profile_token || onvifInfo.ptz_profile_token) : ''),
+          use_onvif_stream: false,
+        };
+      } else if (icsee) {
+        payload.onvif = onvifConfigFor(url);
+      }
       try {
         await api('/cameras', { method: 'POST', body: payload });
         added++;
       } catch (e) { toast(`${g.mosaic ? 'Mosaico' : 'Lente ' + g.channel}: ${e.message}`, 'err'); }
     }
     if (added) {
-      toast(`${added} cámaras añadidas${icsee ? ' (ONVIF/PTZ configurado en puerto 8899)' : ''}`);
+      toast(`${added} cámaras añadidas${icsee ? ' (ONVIF/PTZ configurado)' : ''}`);
       closeModal();
       await refresh(true);
       location.hash = '#/dashboard';
@@ -1298,6 +1322,7 @@ function cameraWizard() {
               ${(d.rtsp_candidates || []).map(u => `<div class="meta" style="margin-top:4px"><button class="btn sm" data-url="${esc(u)}">${esc(u)}</button></div>`).join('')}
             </div>
             <button class="btn sm" data-probe="${esc(d.ip)}">Sondear RTSP</button>
+            <button class="btn sm" data-diag="${esc(d.ip)}">Lentes iCSee</button>
           </div>`).join('') || '<div class="muted">No se han encontrado dispositivos.</div>';
       }
       $$('[data-url]', box).forEach(b => b.onclick = () => {
@@ -1317,6 +1342,10 @@ function cameraWizard() {
         }
       });
       $$('[data-probe]', box).forEach(b => b.onclick = () => discover('rtsp', b.dataset.probe));
+      $$('[data-diag]', box).forEach(b => b.onclick = () => {
+        $('#w-dis-ip').value = b.dataset.diag;
+        diagnose();
+      });
     } catch (e) {
       box.innerHTML = `<div class="muted">Error: ${esc(e.message)}</div>`;
     }
@@ -1325,7 +1354,7 @@ function cameraWizard() {
   $('#w-dis-scan').onclick = () => discover('scan');
 
   // Añade una cámara por cada perfil ONVIF (cada lente de una multi-lente).
-  async function addAllOnvif(host, user, pass, profiles) {
+  async function addAllOnvif(host, user, pass, profiles, port = 8899) {
     const base = $('#w-name').value.trim() || 'Cámara';
     const grp = $('#w-group').value.trim() || 'General';
     let added = 0;
@@ -1339,12 +1368,12 @@ function cameraWizard() {
         url: p.rtsp,
         substream_url: '',
         onvif: {
-          enabled: true,
+          enabled: !!p.has_ptz,
           host,
-          port: 8899,
+          port: +(port || 8899),
           username: user || '',
           password: pass || '',
-          profile_token: p.token || '',
+          profile_token: p.has_ptz ? (p.token || '') : '',
           use_onvif_stream: false,
         },
       };
@@ -1380,66 +1409,125 @@ function cameraWizard() {
           ? openPorts.map(p => `puerto <b>${p.port}</b> ${p.label ? '· ' + esc(p.label) : ''}`).join(' · ')
           : 'ningún puerto abierto') + '</div></div></div>';
 
-      // ONVIF multi-lente: cada lente = un perfil con su propia URL RTSP.
-      const ov = r.onvif_profiles && r.onvif_profiles.profiles ? r.onvif_profiles : null;
-      if (ov && ov.profiles.length) {
-        const user = ov.username || '';
-        const pass = ov.password ? $('#w-dis-pass').value : '';
+      // Canales RTSP agrupados: para las iCSee/XMEye multi-lente es la forma
+      // más clara de ver "Lente 1, Lente 2, Lente 3" y añadirlas de una vez.
+      const channels = r.channels && r.channels.groups ? r.channels : null;
+      const groups = channels ? channels.groups : [];
+      const lensGroups = groups.filter(g => !g.mosaic);
+      const mosaic = groups.find(g => g.mosaic);
+      if (lensGroups.length || mosaic) {
+        const hasPtz = lensGroups.some(g => g.has_ptz) || (channels && channels.has_ptz);
+        const port = (channels && channels.onvif_port) || (r.onvif_profiles && r.onvif_profiles.port) || null;
+        const addLabel = lensGroups.length > 0 ? `➕ Añadir los ${lensGroups.length}` : '➕ Añadir vista combinada';
+        const titleAdd = lensGroups.length > 0
+          ? `📷 Cámara iCSee 3 en 1 / multi-lente: ${lensGroups.length} canal(es)`
+          : '🧩 Cámara iCSee 3 en 1: vista combinada (canal 0)';
+        const metaAdd = lensGroups.length > 0
+          ? `Cada lente se añadirá como cámara independiente.${hasPtz ? ' · una lente con PTZ.' : ''}`
+          : 'Este modelo sólo expone la vista combinada por RTSP; se añade como una cámara.';
         html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
           <div class="grow">
-            <div class="title">📷 Cámara multi-lente: ${ov.profiles.length} perfil(es) vía ONVIF (8899)</div>
-            <div class="meta">Cada perfil = un lente, se añadirá como cámara independiente.${ov.profiles.some(p => p.has_ptz) ? ' · con PTZ.' : ''}</div>
+            <div class="title">${titleAdd}</div>
+            <div class="meta">${port ? `ONVIF puerto ${port} · ` : ''}${metaAdd}</div>
           </div>
-          <button class="btn sm primary" id="w-add-onvif">➕ Añadir los ${ov.profiles.length}</button>
+          <button class="btn sm primary" id="w-add-channels">${addLabel}</button>
         </div>`;
-        html += ov.profiles.map((p, i) => `
+        html += lensGroups.map(g => `
           <div class="item"><div class="grow">
-            <div class="title" style="font-size:12px">${esc(p.name || ('Perfil ' + (i + 1)))}${p.has_ptz ? ' <span style="color:var(--accent,#3ddc97)">· PTZ</span>' : ''}</div>
-            <div class="meta" style="font-size:11px;word-break:break-all">${p.width && p.height ? esc(p.width + 'x' + p.height) + ' · ' : ''}${esc(p.rtsp || 'sin stream')}</div>
+            <div class="title" style="font-size:12px">Lente ${esc(g.channel)}${g.has_ptz ? ' <span style="color:var(--accent,#3ddc97)">· PTZ</span>' : ''}</div>
+            <div class="meta" style="font-size:11px;word-break:break-all">${esc(g.main || g.sub)}</div>
           </div>
-          <button class="btn sm" data-onvif-use="${i}">Usar</button></div>`).join('');
+          <button class="btn sm" data-url="${esc(g.main || g.sub || '')}" data-sub="${esc(g.sub || '')}">Usar</button></div>`).join('');
+        if (mosaic && lensGroups.length) {
+          html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
+            <div class="grow"><div class="title" style="font-size:12px">🧩 Mosaico (canal 0)</div>
+            <div class="meta" style="font-size:11px;word-break:break-all">${esc(mosaic.main || mosaic.sub)}</div></div>
+            <button class="btn sm" data-url="${esc(mosaic.main || '')}" data-sub="${esc(mosaic.sub || '')}">Usar</button></div>`;
+        }
+      } else {
+        // Sin canales agrupados: si ONVIF reporta perfiles, usamos esos perfiles.
+        const ov = r.onvif_profiles && r.onvif_profiles.profiles ? r.onvif_profiles : null;
+        if (ov && ov.profiles.length) {
+          const user = ov.username || '';
+          const pass = ov.password ? $('#w-dis-pass').value : '';
+          html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
+            <div class="grow">
+              <div class="title">📷 Cámara multi-lente: ${ov.profiles.length} perfil(es) vía ONVIF (puerto ${ov.port || 8899})</div>
+              <div class="meta">Cada perfil = un lente, se añadirá como cámara independiente.${ov.profiles.some(p => p.has_ptz) ? ' · con PTZ.' : ''}</div>
+            </div>
+            <button class="btn sm primary" id="w-add-onvif">➕ Añadir los ${ov.profiles.length}</button>
+          </div>`;
+          html += ov.profiles.map((p, i) => `
+            <div class="item"><div class="grow">
+              <div class="title" style="font-size:12px">${esc(p.name || ('Perfil ' + (i + 1)))}${p.has_ptz ? ' <span style="color:var(--accent,#3ddc97)">· PTZ</span>' : ''}</div>
+              <div class="meta" style="font-size:11px;word-break:break-all">${p.width && p.height ? esc(p.width + 'x' + p.height) + ' · ' : ''}${esc(p.rtsp || 'sin stream')}</div>
+            </div>
+            <button class="btn sm" data-onvif-use="${i}">Usar</button></div>`).join('');
+        }
       }
 
       const urls = (r.rtsp || []);
-      if (urls.length) {
+      if (urls.length && !groups.length) {
         html += `<div class="item"><div class="grow"><div class="title">✅ RTSP disponible (${urls.length})</div>` +
           urls.map(u => `<div class="meta" style="word-break:break-all"><button class="btn sm" data-url="${esc(u)}">Usar · ${esc(u)}</button></div>`).join('') +
           '</div></div>';
-      } else {
+      } else if (!urls.length) {
         html += '<div class="item"><div class="grow"><div class="title" style="color:#ff6b6b">❌ RTSP sin respuesta</div></div></div>';
       }
       (r.hints || []).forEach(h => { html += `<div class="item"><div class="grow"><div class="meta">💡 ${esc(h)}</div></div></div>`; });
       box.innerHTML = html;
 
-      // Botón "Añadir las N" (todos los perfiles/lentes de una vez).
+      const onvifPass = () => (channels && channels.password_present) || (r.onvif_profiles && r.onvif_profiles.password) ? $('#w-dis-pass').value : '';
+      const channelInfo = channels ? Object.assign({}, channels, {
+        host: ip,
+        password: onvifPass(),
+      }) : null;
+      const addCh = $('#w-add-channels', box);
+      if (addCh) addCh.onclick = () => addAllChannels(groups, channelInfo);
+
+      // Botón "Añadir las N" (todos los perfiles/lentes de una vez) si no había canales.
       const addAll = $('#w-add-onvif', box);
-      if (addAll) addAll.onclick = () => addAllOnvif(ip, ov.username || '', ov.password ? $('#w-dis-pass').value : '', ov.profiles);
-      $$('[data-onvif-use]', box).forEach(b => b.onclick = () => {
-        const p = ov.profiles[+b.dataset.onvifUse];
-        $('#w-url').value = p.rtsp || '';
-        $('#w-sub').value = '';
-        $('#w-name').value = ($('#w-name').value.trim() || 'Cámara') + (ov.profiles.length > 1 ? ` · ${p.name || ''}` : '').trim();
-        $('#w-onvif').checked = true;
-        $('#w-onvif-box').style.display = '';
-        $('#w-ov-host').value = ip;
-        $('#w-ov-port').value = 8899;
-        $('#w-ov-user').value = ov.username || '';
-        $('#w-ov-pass').value = ov.password ? $('#w-dis-pass').value : '';
-        $('#w-ov-token').value = p.token || '';
-        toast('URL del perfil puesta en el formulario');
+      if (addAll) {
+        const ov = r.onvif_profiles;
+        addAll.onclick = () => addAllOnvif(ip, ov.username || '', ov.password ? $('#w-dis-pass').value : '', ov.profiles, ov.port || 8899);
+      }
+      $$('[data-onvif-use]', box).forEach(b => {
+        const ov = r.onvif_profiles;
+        b.onclick = () => {
+          const p = ov.profiles[+b.dataset.onvifUse];
+          $('#w-url').value = p.rtsp || '';
+          $('#w-sub').value = '';
+          $('#w-name').value = ($('#w-name').value.trim() || 'Cámara') + (ov.profiles.length > 1 ? ` · ${p.name || ''}` : '').trim();
+          $('#w-onvif').checked = true;
+          $('#w-onvif-box').style.display = '';
+          $('#w-ov-host').value = ip;
+          $('#w-ov-port').value = ov.port || 8899;
+          $('#w-ov-user').value = ov.username || '';
+          $('#w-ov-pass').value = ov.password ? $('#w-dis-pass').value : '';
+          $('#w-ov-token').value = p.token || '';
+          toast('URL del perfil puesta en el formulario');
+        };
       });
 
       $$('[data-url]', box).forEach(b => b.onclick = () => {
-        $('#w-url').value = b.dataset.url;
-        if (isIcseeUrl(b.dataset.url)) {
-          const info = icseeInfo(b.dataset.url);
+        const url = b.dataset.url;
+        $('#w-url').value = url;
+        if (b.dataset.sub) $('#w-sub').value = b.dataset.sub;
+        if (isIcseeUrl(url)) {
+          const info = icseeInfo(url);
+          const ov = r.onvif_profiles;
+          const port = (channelInfo && channelInfo.onvif_port) || (ov && ov.port) || 8899;
           $('#w-onvif').checked = true;
           $('#w-onvif-box').style.display = '';
           $('#w-ov-host').value = info.host;
-          $('#w-ov-port').value = 8899;
-          toast('URL RTSP puesta en el formulario');
+          $('#w-ov-port').value = port;
+          $('#w-ov-user').value = (channelInfo && channelInfo.username) || (ov && ov.username) || info.username;
+          $('#w-ov-pass').value = onvifPass() || info.password;
+          const chUrl = url;
+          const ch = groups.find(g => (g.main || g.sub) === chUrl) || lensGroups.find(g => (g.main || g.sub) === chUrl);
+          $('#w-ov-token').value = (ch && ch.profile_token) || (channelInfo && channelInfo.ptz_profile_token) || '';
+          toast('URL RTSP y ONVIF puestos en el formulario');
         } else {
-          $('#w-url').value = b.dataset.url;
           toast('URL puesta en el formulario');
         }
       });

@@ -128,26 +128,24 @@ def diagnose(req: DiscoverRequest):
             rtsp_timeout=max(1.2, req.timeout / 3),
         )
         # Si ONVIF está abierto, enumera perfiles (multi-lente) con su stream.
-        onvif_port_open = any(
-            p["port"] == 8899 and p["open"] for p in report.get("ports", [])
-        )
-        if onvif_port_open:
-            if onvif_client.ONVIF_AVAILABLE:
-                report["onvif_profiles"] = _probe_onvif_profiles(
-                    req.target, req.username, req.password
+        # No limitamos a 8899: probamos 80/8080/8000/8899 automáticamente.
+        if onvif_client.ONVIF_AVAILABLE and (
+            any(p["open"] for p in report.get("ports", [])
+                if p["port"] in (80, 8080, 8000, 8899))
+        ):
+            onvif_info = _probe_onvif_profiles(
+                req.target, req.username, req.password
+            )
+            if onvif_info:
+                report["onvif_profiles"] = onvif_info
+                report["channels"] = _annotate_channels_onvif(
+                    report.get("channels", {}), onvif_info
                 )
-                if not report["onvif_profiles"]:
-                    report["hints"].append(
-                        "El puerto ONVIF (8899) está abierto pero no se pudieron "
-                        "leer perfiles con esas credenciales. Prueba con 'admin' "
-                        "y la contraseña de admin de la cámara (no la de la app)."
-                    )
             else:
                 report["hints"].append(
-                    "El puerto ONVIF (8899) está abierto: la cámara habla ONVIF "
-                    "(detectar todas las lentes y mover/PTZ). Instala la "
-                    "dependencia con 'pip install onvif-zeep' y vuelve a "
-                    "diagnosticar."
+                    "Hay un puerto ONVIF abierto pero no se pudieron leer "
+                    "perfiles con esas credenciales. Prueba con 'admin' y la "
+                    "contraseña de admin de la cámara (no la de la app)."
                 )
         return report
     except HTTPException:
@@ -156,34 +154,107 @@ def diagnose(req: DiscoverRequest):
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
-def _probe_onvif_profiles(host: str, username: str, password: str) -> list:
-    """Enumera perfiles ONVIF en el puerto 8899 probando varias credenciales.
+def _probe_onvif_profiles(host: str, username: str, password: str) -> dict:
+    """Enumera perfiles ONVIF probando varios puertos y credenciales.
 
-    Devuelve lista de perfiles con su URL RTSP (uno por lente en multi-lente).
+    Las cámaras iCSee/XMEye suelen poner ONVIF en 8899, pero otras en 80,
+    8080 o 8000. Devuelve el puerto que funcione y un perfil por lente.
     """
     import logging
 
     log = logging.getLogger("vigia")
+    ports = [8899, 80, 8080, 8000]
     candidates = [(username or "", password or "")]
     if (username or "").lower() != "admin":
         candidates += [("admin", password or ""), ("admin", "")]
     if not candidates[0][0]:
         candidates = [("admin", ""), ("admin", password or "")]
 
-    for u, pw in candidates:
-        try:
-            device = onvif_client.OnvifDevice(host, 8899, u, pw)
-            device.connect()
-            profiles = device.profiles_with_streams()
-            if profiles:
-                return {
-                    "username": u,
-                    "password": bool(pw),
-                    "profiles": profiles,
-                }
-        except Exception as exc:
-            log.debug("ONVIF 8899 con %s: %s", u or "(vacío)", exc)
+    for port in ports:
+        for u, pw in candidates:
+            try:
+                device = onvif_client.OnvifDevice(host, port, u, pw)
+                device.connect()
+                profiles = device.profiles_with_streams()
+                has_ptz = device.has_ptz() or any(p.get("has_ptz") for p in profiles)
+                if profiles:
+                    return {
+                        "port": port,
+                        "username": u,
+                        "password": bool(pw),
+                        "profiles": profiles,
+                        "has_ptz": has_ptz,
+                    }
+                if has_ptz:
+                    # El dispositivo habla ONVIF/PTZ aunque no liste perfiles.
+                    return {
+                        "port": port,
+                        "username": u,
+                        "password": bool(pw),
+                        "profiles": [],
+                        "has_ptz": True,
+                    }
+            except Exception as exc:
+                log.debug("ONVIF %s:%s con %s: %s", host, port, u or "(vacío)", exc)
     return {}
+
+
+def _annotate_channels_onvif(channels: dict, onvif_info: dict) -> dict:
+    """Cruza los canales RTSP detectados con los perfiles ONVIF.
+
+    Añade a cada canal el token del perfil que le corresponde (y el perfil PTZ
+    si la cámara tiene una lente giratoria). Así el asistente puede crear las
+    cámaras correctas y poner PTZ sólo donde corresponde.
+    """
+    import re as _re
+
+    channels = dict(channels or {})
+    groups = list(channels.get("groups") or [])
+    profiles = list(onvif_info.get("profiles") or [])
+
+    def _profile_channel(profile: dict) -> str:
+        u = profile.get("rtsp") or ""
+        m = _re.search(r"(?:^|[?&_/])channel=(\d+)", u, _re.I)
+        return m.group(1) if m else ""
+
+    for g in groups:
+        ch = str(g.get("channel", ""))
+        matched = None
+        for profile in profiles:
+            if _profile_channel(profile) == ch:
+                matched = profile
+                break
+        if matched is None and len(profiles) == len([x for x in groups if not x.get("mosaic")]):
+            # Orden estable: los perfiles de estas cámaras suelen ir en orden
+            # de lente. Usamos la posición del canal dentro de los no-mosaico.
+            idx = [x for x in groups if not x.get("mosaic")].index(g)
+            if 0 <= idx < len(profiles):
+                matched = profiles[idx]
+        if matched is not None:
+            g["profile_token"] = matched.get("token", "")
+            g["has_ptz"] = bool(matched.get("has_ptz"))
+            if not g.get("main") and matched.get("rtsp"):
+                g["main"] = matched["rtsp"]
+        elif onvif_info.get("has_ptz"):
+            g["has_ptz"] = True
+
+    # La lente giratoria normalmente es la primera con has_ptz; la dejamos
+    # indicada en el grupo para que la UI la marque.
+    ptz_profile = None
+    for profile in profiles:
+        if profile.get("has_ptz"):
+            ptz_profile = profile
+            break
+    if ptz_profile is None and profiles:
+        ptz_profile = profiles[0]
+
+    channels["groups"] = groups
+    channels["onvif_port"] = onvif_info.get("port")
+    channels["username"] = onvif_info.get("username", "")
+    channels["password_present"] = bool(onvif_info.get("password"))
+    channels["ptz_profile_token"] = ptz_profile.get("token", "") if ptz_profile else ""
+    channels["has_ptz"] = bool(onvif_info.get("has_ptz") or ptz_profile)
+    return channels
 
 
 @router.get("/usb")

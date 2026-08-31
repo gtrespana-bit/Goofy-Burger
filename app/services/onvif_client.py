@@ -35,6 +35,8 @@ class OnvifDevice:
         self.ptz = None
         self.imaging = None
         self._profile_token: Optional[str] = None
+        self._ptz_checked = False
+        self._ptz_available = False
 
     # ---------- conexión ----------
     def connect(self, wsdl_dir: Optional[str] = None) -> bool:
@@ -73,7 +75,8 @@ class OnvifDevice:
                     if vec and getattr(vec, "RateControl", None)
                     else 0,
                     "encoding": str(getattr(vec, "Encoding", "") or "") if vec else "",
-                    "has_ptz": bool(getattr(profile, "PTZConfiguration", None)),
+                    "has_ptz": bool(getattr(profile, "PTZConfiguration", None))
+                    or self.has_ptz(),
                 }
             )
         return out
@@ -141,10 +144,38 @@ class OnvifDevice:
                 raise OnvifError(f"Este dispositivo no expone PTZ ({exc})")
         return self.ptz
 
+    def has_ptz(self) -> bool:
+        """Comprueba si el dispositivo expone el servicio PTZ."""
+        if self._ptz_checked:
+            return self._ptz_available
+        self._ptz_checked = True
+        try:
+            self._ptz_service()
+            self._ptz_available = True
+        except Exception:
+            self._ptz_available = False
+        return self._ptz_available
+
+    def ptz_profile_token(self) -> Optional[str]:
+        """Token del perfil con PTZ, si lo hay; vuelve al primero disponible."""
+        try:
+            profiles = self.profiles()
+        except Exception:
+            return self._default_token() if self._profile_token else None
+        for profile in profiles:
+            if profile.get("has_ptz"):
+                return profile["token"]
+        if profiles:
+            return profiles[0]["token"]
+        return self._profile_token or None
+
+    def _ptz_token(self, profile_token: Optional[str] = None) -> str:
+        return profile_token or self.ptz_profile_token() or self._default_token()
+
     def ptz_move(self, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0,
                  duration: float = 0.4, profile_token: Optional[str] = None) -> None:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         req = ptz.create_type("ContinuousMove")
         req.ProfileToken = token
         req.Velocity = {"PanTilt": {"x": float(pan), "y": float(tilt)}}
@@ -162,7 +193,7 @@ class OnvifDevice:
     def ptz_relative(self, pan: float = 0.0, tilt: float = 0.0, zoom: float = 0.0,
                      speed: float = 0.5, profile_token: Optional[str] = None) -> None:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         req = ptz.create_type("RelativeMove")
         req.ProfileToken = token
         req.Translation = {
@@ -180,7 +211,7 @@ class OnvifDevice:
 
     def ptz_stop(self, profile_token: Optional[str] = None) -> None:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         req = ptz.create_type("Stop")
         req.ProfileToken = token
         try:
@@ -192,7 +223,7 @@ class OnvifDevice:
 
     def ptz_presets(self, profile_token: Optional[str] = None) -> List[Dict[str, Any]]:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         try:
             presets = ptz.GetPresets({"ProfileToken": token})
         except Exception as exc:
@@ -209,7 +240,7 @@ class OnvifDevice:
 
     def ptz_goto_preset(self, preset_token: str, profile_token: Optional[str] = None) -> None:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         req = ptz.create_type("GotoPreset")
         req.ProfileToken = token
         req.PresetToken = preset_token
@@ -217,7 +248,7 @@ class OnvifDevice:
 
     def ptz_home(self, profile_token: Optional[str] = None) -> None:
         ptz = self._ptz_service()
-        token = profile_token or self._default_token()
+        token = self._ptz_token(profile_token)
         if hasattr(ptz, "GotoHomePosition"):
             ptz.GotoHomePosition({"ProfileToken": token})
 
