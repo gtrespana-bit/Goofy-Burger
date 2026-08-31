@@ -206,6 +206,39 @@ def _open_client(host: str, port: int = DVRIP_PORT, timeout: float = 4.0) -> Opt
     return DVRIPClient(sock)
 
 
+def friendly_login_error(exc: Exception) -> Optional[str]:
+    """Traduce un error de login DVRIP a un mensaje accionable (o ``None``).
+
+    ``DVRIPRequestError`` lleva el código de estado que devuelve la cámara;
+    con él distinguimos "bloqueado por exceso de intentos" (muy habitual tras
+    reintentar durante horas) de "credenciales incorrectas" o "sesión abierta".
+    """
+    try:
+        from dvrip.errors import DVRIPRequestError
+    except Exception:  # pragma: no cover
+        return None
+    if not isinstance(exc, DVRIPRequestError):
+        return None
+    code = getattr(exc, "code", None)
+    if code in (205, 206):  # LOCKOUT / BANNED
+        return (
+            "la cámara ha bloqueado temporalmente el login por demasiados "
+            "intentos. Espera 10-30 minutos o reinicia la cámara, y usa las "
+            "credenciales correctas de la app iCSee."
+        )
+    if code in (106, 203, 204):  # CREDS / PASSWORD / USERNAME
+        return (
+            "credenciales incorrectas para DVRIP/NetIP. Usa la misma cuenta "
+            "que en la app iCSee (o admin con su contraseña)."
+        )
+    if code == 207:  # CONFLICT: ya hay una sesión abierta
+        return (
+            "la cámara ya tiene una sesión DVRIP abierta (quizá la app iCSee). "
+            "Ciérrala o espera unos minutos y reintenta."
+        )
+    return None
+
+
 def _credential_candidates(username: str, password: str) -> List[tuple]:
     us = (username or "").strip()
     pw = password or ""
@@ -301,6 +334,13 @@ def probe(host: str, username: str = "", password: str = "", port: int = DVRIP_P
             return result
         except Exception as exc:
             log.debug("DVRIP %s con %s: %s", host, u or "(vacío)", exc)
+            friendly = friendly_login_error(exc)
+            if friendly:
+                # Si la cámara bloqueó el login o las credenciales son inválidas,
+                # no tiene sentido seguir probando combinaciones: salimos ya con
+                # el mensaje claro (y evitamos agravar el bloqueo).
+                result["hints"].append(f"Login DVRIP con '{u}': {friendly}")
+                break
             code = getattr(exc, "errno", None)
             if code in (111, 10061) or isinstance(exc, ConnectionRefusedError):
                 connection_failures += 1

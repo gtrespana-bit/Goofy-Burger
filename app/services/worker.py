@@ -29,6 +29,22 @@ from .tracker import ObjectTracker
 
 log = logging.getLogger("vigia.worker")
 
+
+def _is_auth_failure(err: str) -> bool:
+    """¿El error de apertura es de autenticación/bloqueo de la cámara?
+
+    Si la cámara bloquea el login (Locked out) o rechaza las credenciales,
+    reintentar cada pocos segundos agrava el bloqueo. Para esos casos el worker
+    usa un backoff mucho más largo (no martillea la cámara).
+    """
+    n = (err or "").lower()
+    return any(s in n for s in (
+        "bloquead", "locked out", "lockout", "banned",
+        "credenciales", "contraseña", "wrong password", "wrong username",
+        "sesión", "session",
+    ))
+
+
 PREVIEW_FPS = 12          # fps máximos publicados al visor
 PREVIEW_QUALITY = 72      # calidad JPEG del directo
 SNAPSHOT_QUALITY = 88
@@ -218,6 +234,7 @@ class CameraWorker(threading.Thread):
     def run(self) -> None:
         log.info("Iniciando cámara %s (%s)", self.camera.get("name"), self.id)
         backoff = 5.0
+        auth_backoff = 120.0
         no_frame_backoff = 1.0
         consecutive_failures = 0
         last_detect = 0.0
@@ -243,10 +260,17 @@ class CameraWorker(threading.Thread):
             try:
                 if self.source is None:
                     if not self._open_source():
-                        time.sleep(min(60.0, backoff))
-                        backoff = min(60.0, backoff * 1.8)
+                        err = self.status.get("last_error", "") or ""
+                        if _is_auth_failure(err):
+                            # Bloqueo/credenciales: no martillear la cámara.
+                            time.sleep(min(900.0, auth_backoff))
+                            auth_backoff = min(900.0, auth_backoff * 1.5)
+                        else:
+                            time.sleep(min(60.0, backoff))
+                            backoff = min(60.0, backoff * 1.8)
                         continue
                     backoff = 2.0
+                    auth_backoff = 120.0
                     no_frame_backoff = 1.0
                     consecutive_failures = 0
 

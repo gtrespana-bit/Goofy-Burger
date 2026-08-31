@@ -350,7 +350,9 @@ class DvripSource(Source):
                     port=cfg["port"], stream=cfg["stream"],
                 )
             except Exception as exc:
-                last_error = f"{type(exc).__name__}: {exc}"
+                from .dvrip import friendly_login_error
+
+                last_error = friendly_login_error(exc) or f"{type(exc).__name__}: {exc}"
                 continue
             self.client, self.data_sock, self.control_sock, self.raw = (
                 client, data_sock, control_sock, raw
