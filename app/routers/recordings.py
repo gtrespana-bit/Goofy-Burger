@@ -132,6 +132,7 @@ def timeline(camera_id: Optional[str] = None, date: Optional[str] = None):
         "events": events,
         "storage": storage_stats(),
     }
+@router.get("/calendar")
 def calendar(camera_id: Optional[str] = None, days: int = Query(31, ge=1, le=365)):
     """Resumen por día para pintar el calendario/línea de tiempo."""
     items = collect(camera_id)

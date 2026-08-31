@@ -60,12 +60,24 @@ function lsJson(key, fallback = null) {
 }
 
 async function api(path, opts = {}) {
-  const res = await fetch('/api' + path, {
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-    ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
+  // Timeout de red: si el backend se queda colgado, la interfaz nunca debe
+  // quedarse "haciendo nada" (por eso los tabs parecían muertos).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeout || 15000);
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      ...opts,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    throw new Error(err && err.name === 'AbortError' ? `Tiempo de espera agotado (${path})` : (err.message || 'Sin conexión con el servidor'));
+  }
+  clearTimeout(timer);
   if (res.status === 401) { if (!opts.silent401) toast('Sesión no autenticada', 'err'); throw new Error('401'); }
   const text = await res.text();
   let data = null;
@@ -310,8 +322,9 @@ function confirmModal(title, text, onYes) {
   // Failsafe: ocultar modal después de 500ms por si algo lo hizo visible
   setTimeout(() => {
     const m = $('#modal');
-    if (m && !m.hidden && !m.querySelector('.modal-body').innerHTML.trim()) {
-      m.hidden = true;
+    if (m && !m.hidden) {
+      const body = m.querySelector('.modal-body');
+      if (body && !body.innerHTML.trim()) m.hidden = true;
     }
   }, 500);
 })();
@@ -409,12 +422,15 @@ async function boot() {
   setupPwa();
   // Navegación robusta: se vincula antes de la autenticación para que los
   // tabs funcionen aunque algo falle después al cargar los datos.
-  $$('#tabs .tab').forEach(tab => {
-    tab.onclick = () => {
-      const view = tab.dataset.view;
-      if (location.hash !== '#/' + view) location.hash = '#/' + view;
-      route();
-    };
+  // Usamos delegación y cambiamos la vista directamente (showView), en vez de
+  // depender de que location.hash ya se haya actualizado al llamar a route().
+  document.addEventListener('click', (e) => {
+    const tab = e.target && e.target.closest ? e.target.closest('#tabs .tab') : null;
+    if (!tab || !tab.dataset.view) return;
+    const view = tab.dataset.view;
+    const targetHash = '#/' + view;
+    try { if (location.hash !== targetHash) location.hash = targetHash; } catch { /* hash no disponible */ }
+    showView(view);
   });
   try {
     const st = await api('/auth/status', { silent401: true });
@@ -433,19 +449,24 @@ async function boot() {
   await startApp();
 }
 
-async function route() {
-  const hash = location.hash.replace(/^#\/?/, '');
-  const [view, param] = hash.split('/');
+async function showView(view, param = null) {
   state.view = view || 'dashboard';
-  state.cameraId = view === 'camera' ? param : null;
-  $$('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === (view || 'dashboard')));
+  state.cameraId = state.view === 'camera' ? param : null;
+  $$('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === state.view));
   try {
     await render();
   } catch (err) {
     console.error('Error cargando vista', state.view, err);
     $('#view').innerHTML = `<div class="panel empty"><span class="big">⚠️</span><p>No se pudo cargar la vista: ${esc(err.message)}</p><button class="btn" id="retry-view">Reintentar</button></div>`;
-    $('#retry-view').onclick = () => route();
+    const retry = $('#retry-view');
+    if (retry) retry.onclick = () => showView(state.view, state.cameraId);
   }
+}
+
+async function route() {
+  const hash = location.hash.replace(/^#\/?/, '');
+  const [view, param] = hash.split('/');
+  await showView(view || 'dashboard', param);
 }
 
 async function refresh(full = false) {
@@ -633,8 +654,23 @@ async function showDiagnostics() {
 /* ------------------------------------------------------------------ */
 /* Vistas                                                              */
 /* ------------------------------------------------------------------ */
+const VIEW_LABELS = {
+  dashboard: 'Directo', multiview: 'Muro', camera: 'cámara',
+  events: 'Eventos', recordings: 'Grabaciones', reports: 'Informes', settings: 'Ajustes',
+};
+function renderSkeleton(view) {
+  // Pintamos inmediatamente una vista de carga. Así, aunque la API tarde o
+  // esté caída, el usuario ve que la pestaña SÍ ha cambiado en lugar de una
+  // pantalla congelada.
+  const v = $('#view');
+  if (!v) return;
+  const label = VIEW_LABELS[view] || 'vista';
+  v.innerHTML = `<div class="panel empty"><span class="spinner"></span><p>Cargando ${esc(label)}…</p></div>`;
+}
+
 async function render() {
   const view = state.view;
+  renderSkeleton(view);
   if (view === 'dashboard') return await renderDashboard();
   if (view === 'multiview') return await renderMultiview();
   if (view === 'camera') return await renderCamera();
@@ -1362,7 +1398,9 @@ async function renderEvents() {
   const data = await api('/events?' + qs);
   state.events = data.events || [];
 
-  const summary = await api('/events/summary');
+  let summary = {};
+  try { summary = await api('/events/summary'); }
+  catch { /* backend antiguo: la vista de eventos sigue funcionando */ }
   const labels = Object.keys(summary.by_label || {});
 
   $('#view').innerHTML = `
@@ -1499,10 +1537,14 @@ async function checkNewEvents() {
 /* ------------------------------------------------------------------ */
 async function renderReports() {
   if (!state.filters.repDate) state.filters.repDate = todayStr();
-  const [report, stats] = await Promise.all([
-    api('/analytics/report/weekly?date=' + encodeURIComponent(state.filters.repDate)),
-    api('/analytics/stats'),
-  ]);
+  let report = { period: { start: '—', end: '—' }, days: [], total: 0, unacknowledged: 0, line_crosses: { total: 0 }, by_camera: {}, by_label: {} };
+  let stats = { cameras: [] };
+  try {
+    [report, stats] = await Promise.all([
+      api('/analytics/report/weekly?date=' + encodeURIComponent(state.filters.repDate)),
+      api('/analytics/stats'),
+    ]);
+  } catch { /* backend antiguo: mostramos la página con huecos en vez de romper la vista */ }
   const days = report.days || [];
   const dayMax = Math.max(1, ...(days.map(d => d.total || 0)));
   const statsCams = stats.cameras || [];
@@ -1520,7 +1562,7 @@ async function renderReports() {
     <div class="grid kpis" style="margin-top:12px">
       <div class="kpi"><b>${report.total}</b><span>eventos</span></div>
       <div class="kpi"><b>${report.unacknowledged}</b><span>sin revisar</span></div>
-      <div class="kpi"><b>${report.line_crosses.total}</b><span>cruce de líneas</span></div>
+      <div class="kpi"><b>${(report.line_crosses || {}).total || 0}</b><span>cruce de líneas</span></div>
       <div class="kpi"><b>${(Object.keys(report.by_camera || {})).length}</b><span>cámaras activas</span></div>
     </div>
   </div>
@@ -1548,8 +1590,8 @@ async function renderReports() {
     </div>
     <div class="panel">
       <h3>✂ Cruces de línea</h3>
-      ${(report.line_crosses.by_line && Object.keys(report.line_crosses.by_line).length)
-        ? Object.entries(report.line_crosses.by_line).map(([name, objs]) => `
+      ${((report.line_crosses || {}).by_line && Object.keys((report.line_crosses || {}).by_line).length)
+        ? Object.entries((report.line_crosses || {}).by_line).map(([name, objs]) => `
           <div style="margin-bottom:8px"><b>${esc(name)}</b>
             <div class="tags" style="margin-top:4px">${Object.entries(objs).map(([k,v]) =>
               `<span class="tag">${esc(k)} · ${v}</span>`).join('')}</div>
@@ -1583,8 +1625,10 @@ async function renderRecordings() {
   if (f.recKind) qs.set('kind', f.recKind);
   const data = await api('/recordings?' + qs);
   state.recordings = data.items || [];
-  const cal = await api('/recordings/calendar?days=31' + (f.recCamera ? `&camera_id=${f.recCamera}` : ''));
-  const st = data.storage;
+  let cal = { days: [] };
+  try { cal = await api('/recordings/calendar?days=31' + (f.recCamera ? `&camera_id=${f.recCamera}` : '')); }
+  catch { /* backend antiguo: la vista de grabaciones sigue funcionando */ }
+  const st = data.storage || {};
   const day = f.recDate || todayStr();
 
   $('#view').innerHTML = `
@@ -1607,7 +1651,7 @@ async function renderRecordings() {
         ${f.recCamera || f.recKind ? '<button class="btn sm ghost" id="rec-reset">Quitar filtros</button>' : ''}
       </div>
       <div class="row">
-        <span class="muted">${data.total} ficheros · ${fmtBytes(st.recordings.bytes + st.clips.bytes)} · libre ${fmtBytes(st.disk.free)}</span>
+        <span class="muted">${data.total} ficheros · ${fmtBytes(((st.recordings || {}).bytes || 0) + ((st.clips || {}).bytes || 0))} · libre ${fmtBytes((st.disk || {}).free || 0)}</span>
         <button class="btn sm danger" id="rec-prune">Limpiar antiguas</button>
       </div>
     </div>
@@ -1642,9 +1686,14 @@ async function renderRecordings() {
 
   const content = $('#rec-content');
   if (f.recMode === 'timeline') {
-    const tl = await api(`/recordings/timeline?date=${encodeURIComponent(day)}${f.recCamera ? `&camera_id=${f.recCamera}` : ''}`);
-    content.innerHTML = timelinePanel(tl, day);
-    wireTimeline();
+    try {
+      const tl = await api(`/recordings/timeline?date=${encodeURIComponent(day)}${f.recCamera ? `&camera_id=${f.recCamera}` : ''}`);
+      content.innerHTML = timelinePanel(tl, day);
+      wireTimeline();
+    } catch {
+      content.innerHTML = `<div class="list">${state.recordings.length ? state.recordings.map(recItem).join('') : '<div class="empty"><span class="big">📼</span>No hay grabaciones para este filtro</div>'}</div>`;
+      $$('[data-rec]').forEach(el => el.onclick = () => videoModal(el.dataset.rec, el.dataset.name));
+    }
   } else {
     content.innerHTML = `<div class="list">
       ${state.recordings.length ? state.recordings.map(recItem).join('')
@@ -2215,6 +2264,7 @@ async function renderSettings() {
   (async () => {
     try {
       const remote = await api('/system/remote');
+      if (!$('#remote-box')) return; // el usuario ya cambió de pestaña
       if ($('#remote-cert')) $('#remote-cert').value = remote.certfile || '';
       if ($('#remote-key')) $('#remote-key').value = remote.keyfile || '';
       if ($('#remote-ddns')) $('#remote-ddns').value = remote.ddns || '';
@@ -2227,7 +2277,10 @@ async function renderSettings() {
         'DDNS: ' + (remote.ddns || '—'),
       ].filter(Boolean);
       $('#remote-box').innerHTML = '<b>' + esc(info.system_name || 'Vigía') + '</b><br>' + list.map(esc).join('<br>');
-    } catch { $('#remote-box').textContent = 'No se pudo consultar la red.'; }
+    } catch {
+      const box = $('#remote-box');
+      if (box) box.textContent = 'No se pudo consultar la red.';
+    }
   })();
 
   // --- general ---
