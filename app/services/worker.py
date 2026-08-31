@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -17,7 +18,7 @@ import numpy as np
 
 from .. import events_store
 from ..config import DATA_DIR, clips_dir, config, recordings_dir, snapshots_dir
-from ..models import slugify
+from ..models import is_schedule_active, slugify
 from ..events_store import make_event
 from .capture import build_source
 from .detector import AIDetector, MotionDetector
@@ -66,6 +67,11 @@ class CameraWorker(threading.Thread):
             "reconnects": 0,
         }
         self._ai_warned = False
+        self._last_notified = 0.0
+        self._notify_times = []
+        self._tamper_since = 0.0
+        self._last_tamper_event = 0.0
+        self._tamper_ok_since = 0.0
         self._setup_recorders()
 
     # ------------------------------------------------------------------
@@ -84,8 +90,8 @@ class CameraWorker(threading.Thread):
     def _setup_recorders(self) -> None:
         rec = self.camera.get("recording") or {}
         mode = rec.get("mode", "continuous")
-        # continua
-        if mode == "continuous":
+        continuous_modes = {"continuous", "smart", "scheduled"}
+        if mode in continuous_modes:
             if self.segment is None:
                 self.segment = SegmentRecorder(
                     self.camera,
@@ -94,16 +100,27 @@ class CameraWorker(threading.Thread):
                     segment_seconds=rec.get("segment_seconds", 300),
                     codec=rec.get("codec", "copy"),
                     audio=rec.get("audio", False),
+                    quality=rec.get("quality", "medium"),
+                    crf=rec.get("crf", 23),
+                    preset=rec.get("preset", "veryfast"),
+                    bitrate=rec.get("bitrate", ""),
+                    width=int(rec.get("width", 0) or 0),
+                    height=int(rec.get("height", 0) or 0),
+                    fps=int(rec.get("fps", 0) or 0),
                 )
             else:
-                self.segment.segment_seconds = max(10, int(rec.get("segment_seconds", 300)))
-                self.segment.codec = rec.get("codec", "copy")
+                for k in ("segment_seconds", "codec", "audio", "quality", "crf",
+                          "preset", "bitrate", "width", "height", "fps"):
+                    if k == "segment_seconds":
+                        self.segment.segment_seconds = max(10, int(rec.get(k, 300)))
+                    else:
+                        setattr(self.segment, k, rec.get(k, getattr(self.segment, k)))
         elif self.segment is not None:
             self.segment.stop()
             self.segment = None
         # por evento
         det = self.camera.get("detection") or {}
-        if mode == "motion":
+        if mode in ("motion", "smart"):
             if self.clip is None:
                 self.clip = ClipRecorder(
                     self.camera,
@@ -111,10 +128,17 @@ class CameraWorker(threading.Thread):
                     fps=max(8.0, float(det.get("fps", 6))),
                     pre_seconds=rec.get("pre_seconds", 5),
                     post_seconds=rec.get("post_seconds", 10),
+                    max_seconds=rec.get("max_event_seconds", 600),
+                    quality=rec.get("quality", "medium"),
+                    crf=rec.get("crf", 23),
+                    preset=rec.get("preset", "veryfast"),
+                    width=int(rec.get("width", 0) or 0),
+                    height=int(rec.get("height", 0) or 0),
                 )
             else:
                 self.clip.pre_seconds = rec.get("pre_seconds", 5)
                 self.clip.post_seconds = rec.get("post_seconds", 10)
+                self.clip.max_seconds = max(30.0, float(rec.get("max_event_seconds", 600)))
         elif self.clip is not None:
             self.clip.stop()
             self.clip = None
@@ -132,6 +156,7 @@ class CameraWorker(threading.Thread):
                 det.get("ai_model", "yolov8n.pt"),
                 det.get("ai_confidence", 0.45),
                 det.get("ai_labels", []),
+                imgsz=int(det.get("ai_imgsz", 640) or 640),
             )
         new_rec = camera.get("recording") or {}
         new_src = camera.get("source_type"), camera.get("url"), \
@@ -223,22 +248,29 @@ class CameraWorker(threading.Thread):
                     fps_count = 0
                     fps_mark = now
 
-                # --- directo (preview) ---
+                # --- directo (preview), con overlay premium si está activo ---
+                visible = None
                 if now - last_preview >= 1.0 / PREVIEW_FPS:
-                    frame_bus.publish(self.id, frame, quality=PREVIEW_QUALITY)
+                    visible = self._apply_overlay(frame)
+                    frame_bus.publish(self.id, visible, quality=PREVIEW_QUALITY)
                     last_preview = now
 
-                # --- clip por evento ---
+                # --- clip por evento (se graba la imagen tal y como se ve) ---
                 if self.clip is not None:
-                    finished = self.clip.feed(frame)
+                    if visible is None:
+                        visible = self._apply_overlay(frame)
+                    finished = self.clip.feed(visible)
                     if finished:
                         self._attach_clip(finished)
 
-                # --- detección ---
+                # --- detección (se analiza la imagen original, sin overlay) ---
                 det_cfg = self.camera.get("detection") or {}
+                detection_active = det_cfg.get("enabled", True) and is_schedule_active(
+                    det_cfg.get("schedule"), now=datetime.now()
+                )
                 interval = 1.0 / max(1, int(det_cfg.get("fps", 6) or 6))
                 if (
-                    det_cfg.get("enabled", True)
+                    detection_active
                     and self.stop_event is not None
                     and (now - last_detect) >= interval
                 ):
@@ -246,17 +278,31 @@ class CameraWorker(threading.Thread):
                     result = self.detector.process(frame)
                     self.status["detect_fps"] = result.fps
                     if result.motion:
-                        self._on_motion(frame, result, now)
+                        if visible is None:
+                            visible = self._apply_overlay(frame)
+                        self._on_motion(frame, result, now, snapshot_frame=visible)
+
+                # --- detección de manipulación / cámara tapada ---
+                if det_cfg.get("tamper_enabled") and detection_active:
+                    tamper_view = visible if visible is not None else self._apply_overlay(frame)
+                    self._check_tamper(frame, tamper_view, now)
 
                 # --- vigilancia de la grabación continua ---
+                recording_active = self._recording_wanted(now)
                 if self.segment is not None:
                     if self.segment.source is None:
                         self.segment.source = self.source
-                    if not self.segment.is_alive():
-                        self.segment.ensure_running()
-                    self.status["recording"] = self.segment.is_alive()
+                    if recording_active:
+                        if not self.segment.is_alive():
+                            self.segment.ensure_running()
+                    elif self.segment.is_alive():
+                        self.segment.stop()
+                    self.status["recording"] = bool(recording_active and self.segment.is_alive())
                 else:
                     self.status["recording"] = bool(self.clip and self.clip.recording)
+
+                if recording_active and not self.status.get("recording") and self.segment is not None:
+                    self.segment.ensure_running()
 
             except Exception as exc:  # pragma: no cover - el hilo nunca debe morir
                 log.exception("Error en el worker de %s", self.id)
@@ -294,6 +340,96 @@ class CameraWorker(threading.Thread):
         return True
 
     # ------------------------------------------------------------------
+    # utilidades premium: horario, overlay, tamper
+    # ------------------------------------------------------------------
+    def _recording_wanted(self, now: float) -> bool:
+        rec = self.camera.get("recording") or {}
+        mode = rec.get("mode", "continuous")
+        if mode == "off":
+            return False
+        if mode in ("scheduled",):
+            return is_schedule_active(rec.get("schedule"), now=datetime.now())
+        # continuous, smart y motion-manual se rigen por su lógica normal.
+        return True
+
+    def _apply_overlay(self, frame: np.ndarray) -> np.ndarray:
+        cfg = (self.camera.get("overlay") or {}).get("enabled") and self.camera.get("overlay") or {}
+        cams = self.camera
+        if not cfg or not cfg.get("enabled"):
+            return frame
+        try:
+            out = frame.copy()
+            h, w = out.shape[:2]
+            scale = float(cfg.get("font_scale", 0.7) or 0.7)
+            lines = []
+            if cfg.get("camera_name"):
+                lines.append(cams.get("name", ""))
+            if cfg.get("location"):
+                lines.append(cams.get("location", ""))
+            if cfg.get("timestamp"):
+                lines.append(datetime.now().strftime("%d/%m/%Y %H:%M:%S"))
+            pos = cfg.get("position", "bottom-left")
+            margin = int(10 * scale)
+            line_h = int(24 * scale)
+            total = line_h * len(lines) + margin
+            x0 = margin if "left" in pos else w - margin
+            y0 = margin if "top" in pos else h - margin - total
+            for i, line in enumerate(lines):
+                text = str(line)
+                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)
+                span = (8 * scale)
+                x = x0 if "left" in pos else x0 - tw - span * 2
+                y = y0 + i * line_h + int(th)
+                cv2.rectangle(out, (int(x - span), int(y - th - span)),
+                              (int(x + tw + span), int(y + span)), (0, 0, 0), -1)
+                cv2.putText(out, text, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX,
+                            scale, (255, 255, 255), 1, cv2.LINE_AA)
+            return out
+        except Exception:
+            return frame
+
+    def _check_tamper(self, frame: np.ndarray, visible: np.ndarray, now: float) -> None:
+        det = self.camera.get("detection") or {}
+        sensitivity = max(1, min(100, int(det.get("tamper_sensitivity", 40))))
+        try:
+            small = cv2.resize(frame, (256, 144), interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            mean = float(gray.mean())
+            std = float(gray.std())
+            tapped = mean < 5 or mean > 250 or std < 2.0
+        except Exception:
+            return
+        limit = max(1, int(8 - sensitivity / 20))  # sensibilidad alta -> detecta antes
+        if tapped:
+            if self._tamper_since <= 0:
+                self._tamper_since = now
+            if self._tamper_since and (now - self._tamper_since) >= limit and (now - self._last_tamper_event) >= 60:
+                self._last_tamper_event = now
+                self._tamper_since = 0
+                rel = self._save_snapshot(visible, [], "tamper")
+                event = make_event(self.camera, "tamper", 0.0, [], snapshot_rel=rel)
+                events_store.add(event)
+                self.status["events"] += 1
+                self.status["last_event_iso"] = event["ts"]
+                self.status["last_event"] = now
+                self._notify(event, rel)
+        else:
+            self._tamper_since = 0
+            self._tamper_ok_since = now
+
+    def _notify_throttled(self, now: float) -> bool:
+        alerts = self.camera.get("alerts") or {}
+        max_per_hour = max(0, int(alerts.get("max_per_hour", 0) or 0))
+        if not max_per_hour:
+            return True
+        window = now - 3600
+        self._notify_times = [t for t in self._notify_times if t >= window]
+        if len(self._notify_times) >= max_per_hour:
+            return False
+        self._notify_times.append(now)
+        return True
+
+    # ------------------------------------------------------------------
     # eventos
     # ------------------------------------------------------------------
     def _ensure_ai(self) -> Optional[AIDetector]:
@@ -305,6 +441,7 @@ class CameraWorker(threading.Thread):
                 det.get("ai_model", "yolov8n.pt"),
                 det.get("ai_confidence", 0.45),
                 det.get("ai_labels", []),
+                imgsz=int(det.get("ai_imgsz", 640) or 640),
             )
             if not self.ai.available and not self._ai_warned:
                 self._ai_warned = True
@@ -314,7 +451,7 @@ class CameraWorker(threading.Thread):
                 )
         return self.ai if (self.ai and self.ai.available) else None
 
-    def _on_motion(self, frame: np.ndarray, result, now: float) -> None:
+    def _on_motion(self, frame: np.ndarray, result, now: float, snapshot_frame: Optional[np.ndarray] = None) -> None:
         det = self.camera.get("detection") or {}
         label = "motion"
         boxes = result.boxes
@@ -322,7 +459,8 @@ class CameraWorker(threading.Thread):
         ai = self._ensure_ai()
         if ai is not None:
             self._ai_frame += 1
-            hit, ai_boxes, ai_labels = ai.process(frame, every_n=1, counter=self._ai_frame)
+            every_n = max(1, int(det.get("ai_every_n", 3) or 1))
+            hit, ai_boxes, ai_labels = ai.process(frame, every_n=every_n, counter=self._ai_frame)
             if not hit:
                 # con IA activa exigimos que confirme un objeto de interés
                 return
@@ -337,7 +475,8 @@ class CameraWorker(threading.Thread):
             return
         self.status["last_event"] = now
 
-        rel_snapshot = self._save_snapshot(frame, boxes, label)
+        snap = snapshot_frame if snapshot_frame is not None else frame
+        rel_snapshot = self._save_snapshot(snap, boxes, label)
         event = make_event(
             self.camera, label, result.score, boxes, snapshot_rel=rel_snapshot
         )
@@ -386,6 +525,11 @@ class CameraWorker(threading.Thread):
     def _notify(self, event: Dict[str, Any], snapshot_rel: str) -> None:
         alerts = self.camera.get("alerts") or {}
         if not alerts.get("enabled", True):
+            return
+        wanted_labels = [str(x).lower() for x in (alerts.get("labels") or [])]
+        if wanted_labels and str(event.get("label", "motion")).lower() not in wanted_labels:
+            return
+        if not self._notify_throttled(time.time()):
             return
         notif_cfg = config.section("notifications")
         if not notif_cfg.get("enabled", True):

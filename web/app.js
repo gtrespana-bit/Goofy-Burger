@@ -239,7 +239,7 @@ function renderTopbar() {
 
   $('#system-name').textContent = state.settings.general?.system_name || 'Vigía';
   $('#system-sub').textContent =
-    `${state.info.local_ip || ''} · ${state.info.platform || ''} · ffmpeg ${state.info.ffmpeg ? '✓' : '✗'}`;
+    `${state.info.edition || 'Pro'} · ${state.info.local_ip || ''} · ${state.info.platform || ''} · ffmpeg ${state.info.ffmpeg ? '✓' : '✗'}`;
 
   $('#topstats').innerHTML = `
     <span class="stat"><span class="dot ${online ? 'on' : (cams.length ? 'warn' : '')}"></span>
@@ -257,12 +257,12 @@ function renderTopbar() {
 /* ------------------------------------------------------------------ */
 async function render() {
   const view = state.view;
-  if (view === 'dashboard') { renderDashboard(); return; }
+  if (view === 'dashboard') return await renderDashboard();
   if (view === 'camera') return await renderCamera();
   if (view === 'events') return await renderEvents();
   if (view === 'recordings') return await renderRecordings();
   if (view === 'settings') return await renderSettings();
-  renderDashboard();
+  return await renderDashboard();
 }
 
 function renderStatusOnly() {
@@ -298,7 +298,7 @@ function camMeta(cam) {
   return parts.join(' · ');
 }
 
-function renderDashboard() {
+async function renderDashboard() {
   const view = $('#view');
   if (!state.cameras.length) {
     view.innerHTML = `<div class="panel empty">
@@ -311,10 +311,27 @@ function renderDashboard() {
     $('#empty-add').onclick = () => cameraWizard();
     return;
   }
-  const groups = {};
-  state.cameras.forEach(c => { (groups[c.group || 'General'] ||= []).push(c); });
 
-  view.innerHTML = Object.entries(groups).map(([group, cams]) => `
+  let dash = { cameras: state.cameras.length, online: 0, recording: 0, events_today: 0, by_label: {}, storage: {} };
+  try {
+    dash = await api('/system/dashboard');
+    state.dash = dash;
+  } catch { /* el panel no debe romperse si falla */ }
+
+  const groups = {};
+  state.cameras
+    .slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+    .forEach(c => { (groups[c.group || 'General'] ||= []).push(c); });
+
+  const kpis = `
+  <div class="kpis">
+    <div class="kpi"><span class="label">Cámaras</span><b>${dash.online ?? 0}/${dash.cameras ?? state.cameras.length}</b><span class="sub">en directo</span></div>
+    <div class="kpi"><span class="label">Grabación</span><b>${dash.recording ?? 0}</b><span class="sub">ahora mismo</span></div>
+    <div class="kpi"><span class="label">Hoy</span><b>${dash.events_today ?? 0}</b><span class="sub">eventos <span class="muted">${Object.entries(dash.by_label || {}).map(([k, v]) => `${k}:${v}`).join(' · ')}</span></span></div>
+    <div class="kpi"><span class="label">Almacenamiento</span><b>${fmtBytes(((dash.storage?.recordings?.bytes || 0) + (dash.storage?.clips?.bytes || 0)))}</b><span class="sub">${fmtBytes(dash.storage?.disk?.free || 0)} libres</span></div>
+  </div>`;
+
+  view.innerHTML = kpis + Object.entries(groups).map(([group, cams]) => `
     <div class="section-title">${esc(group)}</div>
     <div class="grid cams">${cams.map(camCard).join('')}</div>
   `).join('');
@@ -342,14 +359,36 @@ function renderDashboard() {
       openModal('Instantánea', `<img src="/api/stream/${card.dataset.cam}/snapshot.jpg?force=true&t=${Date.now()}"
         style="width:100%;border-radius:10px">`, { wide: true });
     };
+    const full = card.querySelector('[data-act="full"]');
+    if (full) full.onclick = e => {
+      e.stopPropagation();
+      const img = card.querySelector('.feed img');
+      const src = img ? img.src : `/api/stream/${card.dataset.cam}/live.mjpg`;
+      openModal('Pantalla completa', `<div class="video-wrap"><img src="${esc(src)}" style="width:100%;height:70vh;object-fit:contain;background:#000"></div>
+        <div class="row" style="justify-content:flex-end;margin-top:8px">
+          <a class="btn" href="${esc(src)}" target="_blank">Abrir en pestaña</a>
+          <button class="btn ghost" data-close>Cerrar</button>
+        </div>`, { wide: true });
+      const cb = $('[data-close]', $('#modal-body'));
+      if (cb) cb.onclick = closeModal;
+    };
+    const restart = card.querySelector('[data-act="restart"]');
+    if (restart) restart.onclick = async e => {
+      e.stopPropagation();
+      await api(`/cameras/${card.dataset.cam}/restart`, { method: 'POST' });
+      toast('Cámara reiniciándose');
+    };
   });
 }
 
 function camCard(cam) {
   const st = cam.health?.state || 'stopped';
   const rec = !!cam.health?.recording;
+  const color = cam.color ? `border-top:3px solid ${esc(cam.color)}` : '';
+  const location = cam.location ? `<span class="badge">📍 ${esc(cam.location)}</span>` : '';
+  const tags = (cam.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
   return `
-  <div class="cam" data-cam="${cam.id}">
+  <div class="cam" data-cam="${cam.id}" style="${color}">
     <div class="feed" id="feed-${cam.id}">
       <img src="/api/stream/${cam.id}/live.mjpg" alt="${esc(cam.name)}" loading="lazy">
       <div class="overlay"></div>
@@ -358,11 +397,13 @@ function camCard(cam) {
         <span class="badge rec" style="display:${rec ? 'flex' : 'none'}">● REC</span>
       </div>
       <span class="motion">MOVIMIENTO</span>
+      <button class="btn sm ghost fullbang" data-act="full" title="Pantalla completa">⛶</button>
     </div>
     <div class="caminfo">
       <div>
-        <div class="name">${esc(cam.name)}</div>
+        <div class="name">${esc(cam.name)} ${location}</div>
         <div class="meta">${camMeta(cam)}</div>
+        ${tags ? `<div class="row" style="margin-top:4px">${tags}</div>` : ''}
       </div>
       <label class="switch" title="Activar/desactivar cámara">
         <input type="checkbox" data-toggle="${cam.id}" ${cam.enabled ? 'checked' : ''}>
@@ -373,6 +414,7 @@ function camCard(cam) {
       <button class="btn sm" data-act="settings">Ajustes</button>
       <button class="btn sm" data-act="snap">Instantánea</button>
       <button class="btn sm" data-act="record">Grabar 60 s</button>
+      <button class="btn sm" data-act="restart">Reiniciar</button>
     </div>
   </div>`;
 }
@@ -386,15 +428,20 @@ async function renderCamera() {
   if (!cam) { location.hash = '#/dashboard'; return; }
   const events = await api(`/events?camera_id=${id}&limit=12`);
 
+  const recMode = cam.recording?.mode || 'continuous';
+  const quality = { high: 'Alta', medium: 'Media', low: 'Baja', custom: 'Personalizada' }[cam.recording?.quality || 'medium'] || 'Media';
+  const tags = (cam.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(' ');
   $('#view').innerHTML = `
   <div class="spread" style="margin-bottom:12px">
     <div>
-      <h2 style="font-size:19px">${esc(cam.name)}</h2>
+      <h2 style="font-size:19px">${esc(cam.name)} ${cam.location ? `<span class="badge">📍 ${esc(cam.location)}</span>` : ''}</h2>
       <div class="muted">${esc(cam.group || 'General')} · ${stateLabel(cam.health?.state || 'stopped')}
-        · ${esc(cam.health?.resolution || '')}</div>
+        · ${esc(cam.health?.resolution || '')} · grabación ${recMode} · ${quality}</div>
+      ${tags ? `<div class="row" style="margin-top:4px">${tags}</div>` : ''}
     </div>
     <div class="row">
       <button class="btn ghost" id="cam-back">← Volver</button>
+      <button class="btn" id="cam-snap">Instantánea</button>
       <button class="btn" id="cam-settings">Ajustes</button>
       <button class="btn primary" id="cam-record">● Grabar 60 s</button>
     </div>
@@ -426,20 +473,29 @@ async function renderCamera() {
           <div class="field">
             <label>Grabación</label>
             <select id="rec-mode">
-              <option value="continuous" ${cam.recording?.mode === 'continuous' ? 'selected' : ''}>Continua (24/7 por segmentos)</option>
-              <option value="motion" ${cam.recording?.mode === 'motion' ? 'selected' : ''}>Sólo cuando hay movimiento</option>
-              <option value="off" ${cam.recording?.mode === 'off' ? 'selected' : ''}>No grabar</option>
+              <option value="continuous" ${recMode === 'continuous' ? 'selected' : ''}>Continua (24/7 por segmentos)</option>
+              <option value="motion" ${recMode === 'motion' ? 'selected' : ''}>Sólo cuando hay movimiento</option>
+              <option value="smart" ${recMode === 'smart' ? 'selected' : ''}>Inteligente (continua + clips)</option>
+              <option value="scheduled" ${recMode === 'scheduled' ? 'selected' : ''}>Por horario</option>
+              <option value="off" ${recMode === 'off' ? 'selected' : ''}>No grabar</option>
             </select>
           </div>
           <div class="field">
             <label>Espera entre eventos (s)</label>
             <input type="number" id="cooldown" min="0" max="600" value="${cam.detection?.cooldown_seconds ?? 20}">
           </div>
-        </div>
-        <div class="row" style="margin-top:6px">
-          <button class="btn" id="btn-zones">🗺️ Editar zonas de detección</button>
-          <button class="btn" id="btn-save-det">Guardar cambios</button>
-          <button class="btn ghost" id="btn-restart">Reiniciar cámara</button>
+          <div class="field">
+            <label>Zonas / privacidad</label>
+            <button class="btn sm" id="btn-zones" style="width:100%">🗺️ Zonas de detección</button>
+            <button class="btn sm ghost" id="btn-privacy" style="width:100%;margin-top:4px">🔒 Máscara de privacidad</button>
+          </div>
+          <div class="field">
+            <label>Acciones</label>
+            <div class="row">
+              <button class="btn sm" id="btn-save-det">Guardar cambios</button>
+              <button class="btn sm ghost" id="btn-restart">Reiniciar</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -458,6 +514,10 @@ async function renderCamera() {
 
   $('#cam-back').onclick = () => { location.hash = '#/dashboard'; };
   $('#cam-settings').onclick = () => cameraSettings(id);
+  $('#cam-snap').onclick = () => {
+    openModal('Instantánea', `<img src="/api/stream/${id}/snapshot.jpg?force=true&t=${Date.now()}"
+      style="width:100%;border-radius:10px">`, { wide: true });
+  };
   $('#cam-record').onclick = async () => {
     await api(`/cameras/${id}/record?seconds=60`, { method: 'POST' });
     toast('Grabando 60 s');
@@ -470,6 +530,8 @@ async function renderCamera() {
   $('#sens').oninput = e => { $('#sens-val').textContent = e.target.value; };
   $('#area').oninput = e => { $('#area-val').textContent = e.target.value; };
   $('#btn-zones').onclick = () => zoneEditor(cam);
+  const privacyBtn = $('#btn-privacy');
+  if (privacyBtn) privacyBtn.onclick = () => privacyEditor(cam);
   $('#btn-save-det').onclick = async () => {
     await api(`/cameras/${id}`, {
       method: 'PATCH',
@@ -626,6 +688,74 @@ function zoneEditor(cam) {
       toast('Zonas guardadas');
       closeModal(); refresh(true);
     } catch (e) { toast(e.message, 'err'); }
+  };
+}
+
+/*
+ * Editor de máscaras de privacidad: igual que las zonas pero guarda en
+ * detection.privacy_mask y el backend las ignora siempre al detectar.
+ */
+function privacyEditor(cam) {
+  const field = 'privacy_mask';
+  const zones = JSON.parse(JSON.stringify(cam.detection?.[field] || []));
+  openModal('Máscaras de privacidad', `
+    <p class="muted">Dibuja zonas que siempre se ignorarán en la detección
+    (ventanas, puertas, televisores...). No afectan al vídeo, sólo al análisis.</p>
+    <div class="zone-editor"><canvas id="zone-canvas"></canvas></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="zone-close">Cerrar zona</button>
+      <button class="btn ghost" id="zone-undo">Quitar último punto</button>
+      <button class="btn danger" id="zone-clear">Borrar todo</button>
+      <span class="muted" id="zone-count"></span>
+    </div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px">
+      <button class="btn ghost" id="zone-cancel">Cancelar</button>
+      <button class="btn primary" id="zone-save">Guardar</button>
+    </div>`, { wide: true });
+
+  const canvas = $('#zone-canvas');
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+  let current = [];
+  img.onload = () => { canvas.width = img.width; canvas.height = img.height; draw(); };
+  img.src = `/api/stream/${cam.id}/snapshot.jpg?force=true&t=${Date.now()}`;
+  img.onerror = () => toast('No se pudo cargar la imagen de la cámara', 'err');
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const poly = pts => pts.map(p => [p[0] * canvas.width, p[1] * canvas.height]);
+    zones.forEach(z => {
+      const p = poly(z);
+      if (p.length < 2) return;
+      ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]);
+      p.slice(1).forEach(pt => ctx.lineTo(pt[0], pt[1]));
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,80,80,.14)';
+      ctx.strokeStyle = '#ff5050'; ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
+    });
+    if (current.length) {
+      const p = poly(current);
+      ctx.beginPath(); ctx.moveTo(p[0][0], p[0][1]);
+      p.slice(1).forEach(pt => ctx.lineTo(pt[0], pt[1]));
+      ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2; ctx.stroke();
+      p.forEach(pt => { ctx.beginPath(); ctx.arc(pt[0], pt[1], 4, 0, 7); ctx.fillStyle = '#ffb454'; ctx.fill(); });
+    }
+    $('#zone-count').textContent = `${zones.length} máscara(s), ${current.length} punto(s) en curso`;
+  }
+  canvas.onclick = e => {
+    const r = canvas.getBoundingClientRect();
+    current.push([(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]);
+    draw();
+  };
+  $('#zone-close').onclick = () => { if (current.length >= 3) { zones.push(current); current = []; draw(); } else toast('Necesitas al menos 3 puntos', 'warn'); };
+  $('#zone-undo').onclick = () => { current.pop(); draw(); };
+  $('#zone-clear').onclick = () => { zones.length = 0; current = []; draw(); };
+  $('#zone-cancel').onclick = closeModal;
+  $('#zone-save').onclick = async () => {
+    await api(`/cameras/${cam.id}`, { method: 'PATCH', body: { detection: { [field]: zones } } });
+    toast('Máscaras de privacidad guardadas');
+    closeModal(); refresh(true);
   };
 }
 
@@ -905,6 +1035,17 @@ async function renderSettings() {
       <div class="field"><label>URL</label><input id="wh-url" value="${esc(s.notifications?.webhook?.url || '')}" placeholder="https://hooks.ejemplo.com/..."></div>
 
       <div class="divider"></div>
+      <h4>Discord</h4>
+      <label class="checkline"><input type="checkbox" id="di-on" ${s.notifications?.discord?.enabled ? 'checked' : ''}> Activar</label>
+      <div class="field"><label>Webhook URL</label><input id="di-url" value="${esc(s.notifications?.discord?.webhook_url || '')}" placeholder="https://discord.com/api/webhooks/.../"></div>
+
+      <div class="divider"></div>
+      <h4>Pushover</h4>
+      <label class="checkline"><input type="checkbox" id="po-on" ${s.notifications?.pushover?.enabled ? 'checked' : ''}> Activar</label>
+      <div class="field"><label>App token</label><input id="po-token" value="${esc(s.notifications?.pushover?.app_token || '')}"></div>
+      <div class="field"><label>User key</label><input id="po-user" value="${esc(s.notifications?.pushover?.user_key || '')}"></div>
+
+      <div class="divider"></div>
       <h4>Correo (SMTP)</h4>
       <label class="checkline"><input type="checkbox" id="em-on" ${s.notifications?.email?.enabled ? 'checked' : ''}> Activar</label>
       <div class="form-grid">
@@ -934,12 +1075,27 @@ async function renderSettings() {
           <input type="number" min="160" id="dt-width" value="${s.detection?.detect_width ?? 640}"></div>
         <div class="field"><label>Espera entre eventos (s)</label>
           <input type="number" min="0" id="dt-cool" value="${s.detection?.cooldown_seconds ?? 20}"></div>
+        <div class="field"><label>Máx eventos/min (0=sín límite)</label>
+          <input type="number" min="0" id="dt-maxmin" value="${s.detection?.max_events_per_minute ?? 0}"></div>
+        <div class="field grid-span2">${scheduleField('dt-schedule', s.detection?.schedule, 'Detección por defecto: vacío = siempre activa.')}</div>
+        <label class="checkline"><input type="checkbox" id="dt-light" ${s.detection?.ignore_light_change !== false ? 'checked' : ''}> Ignorar cambios globales de luz</label>
+        <label class="checkline"><input type="checkbox" id="dt-tamper" ${s.detection?.tamper_enabled ? 'checked' : ''}> Detectar cámara tapada (por defecto)</label>
         <div class="field"><label>Modo de grabación</label>
           <select id="rd-mode">
             <option value="continuous" ${s.recording?.mode === 'continuous' ? 'selected' : ''}>Continua</option>
             <option value="motion" ${s.recording?.mode === 'motion' ? 'selected' : ''}>Sólo movimiento</option>
+            <option value="smart" ${s.recording?.mode === 'smart' ? 'selected' : ''}>Inteligente</option>
+            <option value="scheduled" ${s.recording?.mode === 'scheduled' ? 'selected' : ''}>Por horario</option>
             <option value="off" ${s.recording?.mode === 'off' ? 'selected' : ''}>Desactivada</option>
           </select></div>
+        <div class="field"><label>Calidad grabación</label>
+          <select id="rd-quality">${['high','medium','low','custom'].map(q => `<option value="${q}" ${s.recording?.quality === q ? 'selected' : ''}>${q}</option>`).join('')}</select></div>
+        <div class="field"><label>CRF</label><input type="number" min="0" max="51" id="rd-crf" value="${s.recording?.crf ?? 23}"></div>
+        <div class="field"><label>Preset</label>
+          <select id="rd-preset">${['ultrafast','superfast','veryfast','faster','fast','medium'].map(p => `<option value="${p}" ${s.recording?.preset === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+        <div class="field"><label>Bitrate (vacío=CRF)</label><input id="rd-bitrate" value="${esc(s.recording?.bitrate || '')}" placeholder="2500k"></div>
+        <div class="field"><label>Resolución (0=original)</label><div class="row"><input type="number" min="0" id="rd-w" value="${s.recording?.width || 0}"><input type="number" min="0" id="rd-h" value="${s.recording?.height || 0}"></div></div>
+        <div class="field"><label>FPS destino</label><input type="number" min="0" max="60" id="rd-fps" value="${s.recording?.fps || 0}"></div>
         <div class="field"><label>Segmento (s)</label>
           <input type="number" min="10" id="rd-seg" value="${s.recording?.segment_seconds ?? 300}"></div>
         <div class="field"><label>Pre / post grabación (s)</label>
@@ -947,6 +1103,8 @@ async function renderSettings() {
             <input type="number" min="0" id="rd-pre" value="${s.recording?.pre_seconds ?? 5}">
             <input type="number" min="1" id="rd-post" value="${s.recording?.post_seconds ?? 10}">
           </div></div>
+        <div class="field"><label>Máx duración evento (s)</label><input type="number" min="30" id="rd-max" value="${s.recording?.max_event_seconds ?? 600}"></div>
+        <div class="field grid-span2">${scheduleField('rd-schedule', s.recording?.schedule, 'Grabación por defecto: vacío = siempre activa (modo por horario).')}</div>
       </div>
       <div class="divider"></div>
       <h4>Detección con IA (personas, vehículos, mascotas)</h4>
@@ -963,7 +1121,7 @@ async function renderSettings() {
 
     <div class="panel">
       <h3>🔒 Seguridad e identidad</h3>
-      <div class="field"><label>Nombre del sistema</label><input id="gn-name" value="${esc(s.general?.system_name || 'Vigía')}"></div>
+      <div class="field"><label>Nombre del sistema</label><input id="gn-name" value="${esc(s.general?.system_name || 'Vigía Pro')}"></div>
       <label class="checkline"><input type="checkbox" id="gn-auth" ${s.general?.auth_enabled ? 'checked' : ''}>
         Pedir usuario y contraseña al abrir Vigía</label>
       <div class="form-grid">
@@ -982,7 +1140,11 @@ async function renderSettings() {
         <tr><td>ONVIF</td><td>${info.onvif_available ? '✓ disponible' : '✗ instala onvif-zeep'}</td></tr>
         <tr><td>IA (YOLO)</td><td>${info.ai_available ? '✓ disponible' : '✗ instala ultralytics'}</td></tr>
         <tr><td>Activo desde</td><td>${fmtDur(info.uptime_seconds)}</td></tr>
+        <tr><td>Edición</td><td><b>${esc(info.edition || 'Pro')}</b></td></tr>
       </table>
+      <details class="pro-features"><summary>✨ Funciones premium incluidas (${(info.features || []).length})</summary>
+        <ul>${(info.features || []).map(f => `<li>${esc(f)}</li>`).join('')}</ul>
+      </details>
       <div class="row" style="margin-top:12px">
         <button class="btn" id="sys-export">Exportar configuración</button>
         <button class="btn ghost" id="sys-reload">Recargar del disco</button>
@@ -1018,6 +1180,8 @@ async function renderSettings() {
         telegram: { enabled: $('#tg-on').checked, bot_token: $('#tg-token').value, chat_id: $('#tg-chat').value },
         ntfy: { enabled: $('#nf-on').checked, server: $('#nf-server').value, topic: $('#nf-topic').value, token: $('#nf-token').value },
         webhook: { enabled: $('#wh-on').checked, url: $('#wh-url').value },
+        discord: { enabled: $('#di-on').checked, webhook_url: $('#di-url').value },
+        pushover: { enabled: $('#po-on').checked, app_token: $('#po-token').value, user_key: $('#po-user').value },
         email: {
           enabled: $('#em-on').checked, host: $('#em-host').value, port: +$('#em-port').value,
           username: $('#em-user').value, password: $('#em-pass').value,
@@ -1043,6 +1207,10 @@ async function renderSettings() {
         sensitivity: +$('#dt-sens').value, min_area: +$('#dt-area').value,
         fps: +$('#dt-fps').value, detect_width: +$('#dt-width').value,
         cooldown_seconds: +$('#dt-cool').value,
+        max_events_per_minute: +$('#dt-maxmin').value,
+        ignore_light_change: $('#dt-light').checked,
+        tamper_enabled: $('#dt-tamper').checked,
+        schedule: parseScheduleText($('#dt-schedule').value),
         ai_enabled: $('#dt-ai').checked, ai_model: $('#dt-model').value,
         ai_confidence: +$('#dt-conf').value,
         ai_labels: $('#dt-labels').value.split(',').map(s => s.trim()).filter(Boolean),
@@ -1051,8 +1219,19 @@ async function renderSettings() {
     await api('/settings/recording', {
       method: 'PATCH',
       body: {
-        mode: $('#rd-mode').value, segment_seconds: +$('#rd-seg').value,
-        pre_seconds: +$('#rd-pre').value, post_seconds: +$('#rd-post').value,
+        mode: $('#rd-mode').value,
+        quality: $('#rd-quality').value,
+        crf: +$('#rd-crf').value,
+        preset: $('#rd-preset').value,
+        bitrate: $('#rd-bitrate').value,
+        width: +$('#rd-w').value,
+        height: +$('#rd-h').value,
+        fps: +$('#rd-fps').value,
+        segment_seconds: +$('#rd-seg').value,
+        pre_seconds: +$('#rd-pre').value,
+        post_seconds: +$('#rd-post').value,
+        max_event_seconds: +$('#rd-max').value,
+        schedule: parseScheduleText($('#rd-schedule').value),
       },
     });
     toast('Ajustes de detección guardados'); refresh(true);
@@ -1123,6 +1302,44 @@ function fillUrlCredentials(u, username, password) {
   } catch {
     return u;
   }
+}
+
+function scheduleToText(schedule) {
+  const names = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+  return (schedule || []).map((e, i) => `${(e.days || []).map(d => names[d]).join('') || 'Todos'} ${e.start || '00:00'}-${e.end || '23:59'}`).join(' · ');
+}
+
+function parseScheduleText(text) {
+  const out = [];
+  const parts = (text || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
+  for (const part of parts) {
+    const m = part.match(/^([A-Za-z0-9, -]+)\s+(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+    if (!m) continue;
+    const names = {L:0, M:1, X:2, J:3, V:4, S:5, D:6};
+    const ws = m[1].toUpperCase().replace(/\s+/g, '');
+    const days = [];
+    if (!ws || ws === 'TODOS') {
+      days.push(0,1,2,3,4,5,6);
+    } else if (/[0-9]/.test(ws)) {
+      for (const part of ws.split(',')) {
+        if (/^\d-\d$/.test(part)) {
+          const [a, b] = part.split('-').map(Number);
+          for (let d = Math.min(a, b); d <= Math.max(a, b); d++) if (d >= 0 && d <= 6) days.push(d);
+        } else if (/^\d$/.test(part)) days.push(+part);
+      }
+    } else {
+      for (const ch of ws) if (ch in names) days.push(names[ch]);
+    }
+    if (days.length) out.push({ days: [...new Set(days)].sort(), start: m[2], end: m[3] });
+  }
+  return out;
+}
+
+// Renderiza un textarea simple pero legible para horarios.
+function scheduleField(id, schedule, hint) {
+  return `<div class="field"><label>Horario <span class="muted">(vacío = siempre)</span></label>
+    <input id="${id}" value="${esc(scheduleToText(schedule))}" placeholder="L-V 08:00-20:00 · S-D 00:00-23:59">
+    <span class="hint">${hint || 'Formato: <code>L-V 08:00-20:00</code>. Separados por punto y coma.'}</span></div>`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1674,25 +1891,107 @@ function cameraWizard() {
 async function cameraSettings(id) {
   const cam = state.cameras.find(c => c.id === id);
   if (!cam) return;
+  const rec = cam.recording || {};
+  const det = cam.detection || {};
+  const alerts = cam.alerts || {};
+  const ov = cam.overlay || {};
+  const isRtsp = cam.source_type === 'rtsp';
+  const qualityOpts = ['high', 'medium', 'low', 'custom'];
+  const presetOpts = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium'];
   openModal(`Ajustes · ${cam.name}`, `
     <div class="form-grid">
       <div class="field"><label>Nombre</label><input id="c-name" value="${esc(cam.name)}"></div>
       <div class="field"><label>Grupo</label><input id="c-group" value="${esc(cam.group || '')}"></div>
+      <div class="field"><label>Ubicación</label><input id="c-location" value="${esc(cam.location || '')}" placeholder="Entrada, garaje..."></div>
+      <div class="field"><label>Color de tarjeta</label><input id="c-color" value="${esc(cam.color || '')}" placeholder="#3ddc97"></div>
+      <div class="field"><label>Etiquetas (coma)</label><input id="c-tags" value="${esc((cam.tags || []).join(','))}" placeholder="exterior,patio"></div>
+      <div class="field"><label>Orden en panel</label><input type="number" id="c-order" value="${cam.order || 0}"></div>
       <div class="field"><label>Tipo</label>
         <select id="c-type" disabled>
           ${['rtsp', 'usb', 'file', 'demo'].map(t => `<option value="${t}" ${cam.source_type === t ? 'selected' : ''}>${t.toUpperCase()}</option>`).join('')}
         </select></div>
-      <div class="field"><label>URL principal</label><input id="c-url" value="${esc(cam.url || '')}"></div>
+      ${isRtsp ? `<div class="field"><label>URL principal</label><input id="c-url" value="${esc(cam.url || '')}"></div>
       <div class="field"><label>URL secundaria</label><input id="c-sub" value="${esc(cam.substream_url || '')}"></div>
       <div class="field"><label>Usuario</label><input id="c-user" value="${esc(cam.username || '')}"></div>
-      <div class="field"><label>Contraseña</label><input type="password" id="c-pass" value="${esc(cam.password || '')}"></div>
+      <div class="field"><label>Contraseña</label><input type="password" id="c-pass" value="${esc(cam.password || '')}"></div>` : ''}
+      <div class="field grid-span2"><label>Notas</label><input id="c-notes" value="${esc(cam.notes || '')}" placeholder="Texto libre..."></div>
     </div>
+
     <div class="divider"></div>
-    <h4>Alertas</h4>
-    <label class="checkline"><input type="checkbox" id="c-alerts" ${cam.alerts?.enabled ? 'checked' : ''}> Enviar avisos de esta cámara</label>
-    <label class="checkline"><input type="checkbox" id="c-away" ${cam.alerts?.only_when_away ? 'checked' : ''}> Sólo cuando esté fuera de casa</label>
-    <div class="field"><label>Canales (vacío = todos los activos)</label>
-      <input id="c-channels" value="${esc((cam.alerts?.channels || []).join(','))}" placeholder="telegram,ntfy"></div>
+    <h4>🎬 Grabación profesional</h4>
+    <div class="form-grid">
+      <div class="field"><label>Modo</label>
+        <select id="c-rec-mode">
+          <option value="continuous" ${rec.mode === 'continuous' ? 'selected' : ''}>Continua 24/7</option>
+          <option value="motion" ${rec.mode === 'motion' ? 'selected' : ''}>Sólo movimiento</option>
+          <option value="smart" ${rec.mode === 'smart' ? 'selected' : ''}>Inteligente (continua + clips)</option>
+          <option value="scheduled" ${rec.mode === 'scheduled' ? 'selected' : ''}>Por horario</option>
+          <option value="off" ${rec.mode === 'off' ? 'selected' : ''}>Desactivada</option>
+        </select></div>
+      <div class="field"><label>Calidad</label>
+        <select id="c-rec-quality">${qualityOpts.map(q => `<option value="${q}" ${rec.quality === q ? 'selected' : ''}>${q}</option>`).join('')}</select></div>
+      <div class="field"><label>CRF (0-51)</label><input type="number" min="0" max="51" id="c-rec-crf" value="${rec.crf ?? 23}"></div>
+      <div class="field"><label>Preset x264</label>
+        <select id="c-rec-preset">${presetOpts.map(p => `<option value="${p}" ${rec.preset === p ? 'selected' : ''}>${p}</option>`).join('')}</select></div>
+      <div class="field"><label>Bitrate (vacío=CRF)</label><input id="c-rec-bitrate" value="${esc(rec.bitrate || '')}" placeholder="2500k"></div>
+      <div class="field"><label>Resolución (ancho x alto, 0=original)</label><div class="row"><input type="number" min="0" id="c-rec-w" value="${rec.width || 0}"><input type="number" min="0" id="c-rec-h" value="${rec.height || 0}"></div></div>
+      <div class="field"><label>FPS destino (0=original)</label><input type="number" min="0" max="60" id="c-rec-fps" value="${rec.fps || 0}"></div>
+      <div class="field"><label>Segmento (s)</label><input type="number" min="10" id="c-rec-seg" value="${rec.segment_seconds ?? 300}"></div>
+      <div class="field"><label>Pre / post (s)</label><div class="row"><input type="number" min="0" id="c-rec-pre" value="${rec.pre_seconds ?? 5}"><input type="number" min="1" id="c-rec-post" value="${rec.post_seconds ?? 10}"></div></div>
+      <div class="field"><label>Máx. duración evento (s)</label><input type="number" min="30" id="c-rec-max" value="${rec.max_event_seconds ?? 600}"></div>
+      <div class="field"><label>Códec / audio</label><div class="row">
+        <select id="c-rec-codec"><option value="copy" ${rec.codec === 'copy' ? 'selected' : ''}>copy</option><option value="h264" ${rec.codec === 'h264' ? 'selected' : ''}>h264</option></select>
+        <label class="checkline"><input type="checkbox" id="c-rec-audio" ${rec.audio ? 'checked' : ''}> audio</label>
+      </div></div>
+      <div class="field"><label>Retención propia (días, 0=global)</label><input type="number" min="0" max="365" id="c-rec-ret" value="${rec.retention_days ?? 0}"></div>
+      <div class="field grid-span2">${scheduleField('c-rec-schedule', rec.schedule, 'Grabación continua sólo en estas franjas (modo por horario).')}</div>
+    </div>
+
+    <div class="divider"></div>
+    <h4>🧠 Detección inteligente</h4>
+    <div class="form-grid">
+      <div class="field"><label>Sensibilidad</label><input type="number" min="1" max="100" id="c-det-sens" value="${det.sensitivity ?? 55}"></div>
+      <div class="field"><label>Área mínima</label><input type="number" min="0" id="c-det-area" value="${det.min_area ?? 1200}"></div>
+      <div class="field"><label>FPS análisis</label><input type="number" min="1" max="30" id="c-det-fps" value="${det.fps ?? 6}"></div>
+      <div class="field"><label>Ancho análisis</label><input type="number" min="160" id="c-det-width" value="${det.detect_width ?? 640}"></div>
+      <div class="field"><label>Cooldown (s)</label><input type="number" min="0" id="c-det-cool" value="${det.cooldown_seconds ?? 20}"></div>
+      <div class="field"><label>Máx eventos/min (0=sín límite)</label><input type="number" min="0" id="c-det-maxmin" value="${det.max_events_per_minute ?? 0}"></div>
+      <div class="field"><label>Zonas</label><button class="btn sm" id="c-zones">Editar zonas</button></div>
+      <div class="field grid-span2">${scheduleField('c-det-schedule', det.schedule, 'La detección sólo está activa en estas franjas.')}</div>
+      <label class="checkline"><input type="checkbox" id="c-det-light" ${det.ignore_light_change !== false ? 'checked' : ''}> Ignorar cambios globales de luz</label>
+      <label class="checkline"><input type="checkbox" id="c-det-privacy" ${det.tamper_enabled ? 'checked' : ''}> Detectar cámara tapada / manipulación</label>
+      <div class="field"><label>Sensibilidad taponazo</label><input type="number" min="1" max="100" id="c-det-tamper" value="${det.tamper_sensitivity ?? 40}"></div>
+      <label class="checkline"><input type="checkbox" id="c-det-ai" ${det.ai_enabled ? 'checked' : ''}> Confirmar con IA (personas/vehículos/mascotas)</label>
+      <div class="field"><label>Modelo</label><input id="c-det-model" value="${esc(det.ai_model || 'yolov8n.pt')}"></div>
+      <div class="field"><label>Clases (coma)</label><input id="c-det-labels" value="${esc((det.ai_labels || []).join(','))}"></div>
+      <div class="field"><label>Confianza</label><input type="number" min="0.05" max="0.95" step="0.05" id="c-det-conf" value="${det.ai_confidence ?? 0.45}"></div>
+      <div class="field"><label>Analizar cada N frames</label><input type="number" min="1" max="10" id="c-det-every" value="${det.ai_every_n ?? 3}"></div>
+      <div class="field"><label>Imagen IA (px)</label><input type="number" min="320" id="c-det-imgsz" value="${det.ai_imgsz ?? 640}"></div>
+    </div>
+
+    <div class="divider"></div>
+    <h4>🔔 Alertas premium</h4>
+    <div class="form-grid">
+      <label class="checkline"><input type="checkbox" id="c-alerts" ${alerts.enabled ? 'checked' : ''}> Enviar avisos</label>
+      <label class="checkline"><input type="checkbox" id="c-away" ${alerts.only_when_away ? 'checked' : ''}> Sólo fuera de casa</label>
+      <div class="field"><label>Canales (vacío=todos)</label><input id="c-channels" value="${esc((alerts.channels || []).join(','))}" placeholder="telegram,ntfy,discord,email"></div>
+      <div class="field"><label>Sólo etiquetas (vacío=todas)</label><input id="c-labels" value="${esc((alerts.labels || []).join(','))}" placeholder="person,car"></div>
+      <div class="field"><label>Máx avisos/hora (0=sín límite)</label><input type="number" min="0" id="c-maxhour" value="${alerts.max_per_hour ?? 0}"></div>
+    </div>
+
+    <div class="divider"></div>
+    <h4>🖼️ Marcas de agua / overlay</h4>
+    <div class="form-grid">
+      <label class="checkline"><input type="checkbox" id="c-ov" ${ov.enabled ? 'checked' : ''}> Mostrar overlay</label>
+      <label class="checkline"><input type="checkbox" id="c-ov-ts" ${ov.timestamp !== false ? 'checked' : ''}> fecha/hora</label>
+      <label class="checkline"><input type="checkbox" id="c-ov-name" ${ov.camera_name !== false ? 'checked' : ''}> nombre</label>
+      <label class="checkline"><input type="checkbox" id="c-ov-loc" ${ov.location ? 'checked' : ''}> ubicación</label>
+      <div class="field"><label>Posición</label><select id="c-ov-pos">
+        ${['top-left','top-right','bottom-left','bottom-right'].map(p => `<option value="${p}" ${ov.position === p ? 'selected' : ''}>${p}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Tamaño</label><input type="number" min="0.3" max="2" step="0.1" id="c-ov-scale" value="${ov.font_scale ?? 0.7}"></div>
+    </div>
+
     <div class="divider"></div>
     <div class="row" style="justify-content:space-between">
       <button class="btn danger" id="c-delete">Eliminar cámara</button>
@@ -1700,16 +1999,16 @@ async function cameraSettings(id) {
         <button class="btn ghost" id="c-cancel">Cancelar</button>
         <button class="btn primary" id="c-save">Guardar</button>
       </div>
-    </div>`, { wide: false });
+    </div>`, { wide: true });
 
   $('#c-cancel').onclick = closeModal;
+  $('#c-zones').onclick = () => zoneEditor(cam);
   $('#c-save').onclick = async () => {
-    let url = $('#c-url').value.trim();
-    let sub = $('#c-sub').value.trim();
-    let user = $('#c-user').value;
-    let pass = $('#c-pass').value;
-    // Igual que en el asistente: mantener las credenciales tanto en los campos
-    // como dentro de la URL, para que la fuente RTSP y la grabación las usen.
+    let url = $('#c-url') ? $('#c-url').value.trim() : (cam.url || '');
+    let sub = $('#c-sub') ? $('#c-sub').value.trim() : (cam.substream_url || '');
+    let user = $('#c-user') ? $('#c-user').value : (cam.username || '');
+    let pass = $('#c-pass') ? $('#c-pass').value : (cam.password || '');
+    // Mantiene credenciales tanto en campos como dentro de la URL.
     if (url) {
       const info = icseeInfo(url);
       user = user || info.username || '';
@@ -1717,22 +2016,70 @@ async function cameraSettings(id) {
       url = (user || pass) ? fillUrlCredentials(url, user, pass) : url;
     }
     if (sub) sub = (user || pass) ? fillUrlCredentials(sub, user, pass) : sub;
-    await api(`/cameras/${id}`, {
-      method: 'PATCH',
-      body: {
-        name: $('#c-name').value,
-        group: $('#c-group').value,
-        url,
-        substream_url: sub,
-        username: user,
-        password: pass,
-        alerts: {
-          enabled: $('#c-alerts').checked,
-          only_when_away: $('#c-away').checked,
-          channels: $('#c-channels').value.split(',').map(s => s.trim()).filter(Boolean),
-        },
-      },
-    });
+    const payload = {
+      name: $('#c-name').value,
+      group: $('#c-group').value,
+      location: $('#c-location').value,
+      tags: $('#c-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+      notes: $('#c-notes').value,
+      color: $('#c-color').value.trim(),
+      order: +$('#c-order').value || 0,
+    };
+    if ($('#c-url')) payload.url = url;
+    if ($('#c-sub')) payload.substream_url = sub;
+    if ($('#c-user')) { payload.username = user; payload.password = pass; }
+    payload.recording = {
+      mode: $('#c-rec-mode').value,
+      quality: $('#c-rec-quality').value,
+      crf: +$('#c-rec-crf').value,
+      preset: $('#c-rec-preset').value,
+      bitrate: $('#c-rec-bitrate').value.trim(),
+      width: +$('#c-rec-w').value, height: +$('#c-rec-h').value,
+      fps: +$('#c-rec-fps').value,
+      segment_seconds: +$('#c-rec-seg').value,
+      pre_seconds: +$('#c-rec-pre').value,
+      post_seconds: +$('#c-rec-post').value,
+      max_event_seconds: +$('#c-rec-max').value,
+      codec: $('#c-rec-codec').value,
+      audio: $('#c-rec-audio').checked,
+      retention_days: +$('#c-rec-ret').value,
+      schedule: parseScheduleText($('#c-rec-schedule').value),
+    };
+    payload.detection = {
+      enabled: cam.detection?.enabled ?? true,
+      sensitivity: +$('#c-det-sens').value,
+      min_area: +$('#c-det-area').value,
+      fps: +$('#c-det-fps').value,
+      detect_width: +$('#c-det-width').value,
+      cooldown_seconds: +$('#c-det-cool').value,
+      max_events_per_minute: +$('#c-det-maxmin').value,
+      ignore_light_change: $('#c-det-light').checked,
+      tamper_enabled: $('#c-det-privacy').checked,
+      tamper_sensitivity: +$('#c-det-tamper').value,
+      schedule: parseScheduleText($('#c-det-schedule').value),
+      ai_enabled: $('#c-det-ai').checked,
+      ai_model: $('#c-det-model').value,
+      ai_labels: $('#c-det-labels').value.split(',').map(s => s.trim()).filter(Boolean),
+      ai_confidence: +$('#c-det-conf').value,
+      ai_every_n: +$('#c-det-every').value,
+      ai_imgsz: +$('#c-det-imgsz').value,
+    };
+    payload.alerts = {
+      enabled: $('#c-alerts').checked,
+      only_when_away: $('#c-away').checked,
+      channels: $('#c-channels').value.split(',').map(s => s.trim()).filter(Boolean),
+      labels: $('#c-labels').value.split(',').map(s => s.trim()).filter(Boolean),
+      max_per_hour: +$('#c-maxhour').value,
+    };
+    payload.overlay = {
+      enabled: $('#c-ov').checked,
+      timestamp: $('#c-ov-ts').checked,
+      camera_name: $('#c-ov-name').checked,
+      location: $('#c-ov-loc').checked,
+      position: $('#c-ov-pos').value,
+      font_scale: +$('#c-ov-scale').value,
+    };
+    await api(`/cameras/${id}`, { method: 'PATCH', body: payload });
     toast('Cámara actualizada'); closeModal(); refresh(true);
   };
   $('#c-delete').onclick = () => confirmModal('Eliminar cámara',

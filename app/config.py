@@ -66,13 +66,15 @@ EVENTS_FILENAME = "events.json"
 
 def default_config() -> Dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "general": {
-            "system_name": "Vigía",
+            "system_name": "Vigía Pro",
+            "edition": "Pro",
             # Zona horaria para mostrar horas; None = la del sistema.
             "timezone": None,
             "auth_enabled": False,
             "username": "admin",
+            "show_frame_overlay": True,
             # Contraseña en texto plano (se guarda hash si se cambia desde la UI)
             "password_hash": "",
         },
@@ -83,6 +85,7 @@ def default_config() -> Dict[str, Any]:
             "retention_days": 14,
             "max_storage_gb": 100,
             "prune_interval_minutes": 30,
+            "thumbnails": True,
         },
         "detection": {
             # Valores por defecto que heredan las cámaras nuevas.
@@ -94,18 +97,37 @@ def default_config() -> Dict[str, Any]:
             "cooldown_seconds": 20,     # mínimo entre eventos de la misma cámara
             "zones": [],                # zonas (polígonos) por defecto
             "zone_mode": "include",     # include | exclude
+            "privacy_mask": [],
+            "ignore_light_change": True,
+            "max_events_per_minute": 0,
+            "tamper_enabled": False,
+            "tamper_sensitivity": 40,
+            "schedule": [],
             "ai_enabled": False,
             "ai_labels": ["person", "car", "truck", "dog", "cat"],
             "ai_confidence": 0.45,
             "ai_model": "yolov8n.pt",
+            "ai_every_n": 3,
+            "ai_imgsz": 640,
         },
         "recording": {
-            "mode": "continuous",       # continuous | motion | off
+            "mode": "continuous",       # continuous | motion | smart | scheduled | off
+            "quality": "medium",        # high | medium | low | custom
+            "crf": 23,
+            "preset": "veryfast",
+            "bitrate": "",
+            "width": 0,
+            "height": 0,
+            "fps": 0,
             "segment_seconds": 300,
             "pre_seconds": 5,
             "post_seconds": 10,
+            "max_event_seconds": 600,
             "codec": "copy",            # copy | h264
             "audio": False,
+            "snapshot_on_motion": True,
+            "retention_days": 0,
+            "schedule": [],
         },
         "notifications": {
             "enabled": True,
@@ -119,6 +141,8 @@ def default_config() -> Dict[str, Any]:
                 "token": "",
             },
             "webhook": {"enabled": False, "url": "", "headers": {}},
+            "discord": {"enabled": False, "webhook_url": ""},
+            "pushover": {"enabled": False, "app_token": "", "user_key": ""},
             "email": {
                 "enabled": False,
                 "host": "smtp.gmail.com",

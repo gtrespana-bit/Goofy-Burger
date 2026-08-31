@@ -5,6 +5,7 @@ Los envíos se hacen en un pool de hilos para no bloquear el bucle de vídeo.
 
 from __future__ import annotations
 
+import json
 import mimetypes
 import smtplib
 import ssl
@@ -15,7 +16,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-CHANNELS = ("telegram", "ntfy", "webhook", "email")
+CHANNELS = ("telegram", "ntfy", "webhook", "discord", "pushover", "email")
 
 _EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notifier")
 
@@ -95,6 +96,54 @@ def _send_webhook(cfg: dict, title: str, body: str, image: Optional[Path]) -> st
         return f"webhook: {type(exc).__name__}: {exc}"
 
 
+def _send_discord(cfg: dict, title: str, body: str, image: Optional[Path]) -> str:
+    url = (cfg.get("webhook_url") or "").strip()
+    if not url:
+        return "discord: falta webhook_url"
+    payload = {"content": f"**{title}**\\n{body}"[:2000]}
+    files = None
+    data = None
+    try:
+        if image and image.exists():
+            with image.open("rb") as fh:
+                files = {"file": (image.name, fh, "image/jpeg")}
+                data = {"payload_json": json.dumps(payload, ensure_ascii=False)}
+                resp = requests.post(url, data=data, files=files, timeout=15)
+        else:
+            resp = requests.post(url, json=payload, timeout=15)
+        if resp.status_code >= 300:
+            return f"discord: HTTP {resp.status_code} {resp.text[:120]}"
+        return ""
+    except Exception as exc:
+        return f"discord: {type(exc).__name__}: {exc}"
+
+
+def _send_pushover(cfg: dict, title: str, body: str, image: Optional[Path]) -> str:
+    token = (cfg.get("app_token") or "").strip()
+    user = (cfg.get("user_key") or "").strip()
+    if not token or not user:
+        return "pushover: falta app_token o user_key"
+    try:
+        data = {"token": token, "user": user, "message": f"{title}\\n{body}"[:1024], "title": "Vigía"}
+        if image and image.exists():
+            with image.open("rb") as fh:
+                resp = requests.post(
+                    "https://api.pushover.net/1/messages.json",
+                    data=data,
+                    files={"attachment": (image.name, fh, "image/jpeg")},
+                    timeout=15,
+                )
+        else:
+            resp = requests.post(
+                "https://api.pushover.net/1/messages.json", data=data, timeout=15
+            )
+        if resp.status_code >= 300:
+            return f"pushover: HTTP {resp.status_code} {resp.text[:120]}"
+        return ""
+    except Exception as exc:
+        return f"pushover: {type(exc).__name__}: {exc}"
+
+
 def _send_email(cfg: dict, title: str, body: str, image: Optional[Path]) -> str:
     host = (cfg.get("host") or "").strip()
     to = (cfg.get("to") or "").strip()
@@ -128,6 +177,8 @@ _SENDERS = {
     "telegram": _send_telegram,
     "ntfy": _send_ntfy,
     "webhook": _send_webhook,
+    "discord": _send_discord,
+    "pushover": _send_pushover,
     "email": _send_email,
 }
 

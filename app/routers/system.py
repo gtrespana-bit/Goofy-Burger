@@ -22,7 +22,19 @@ from .. import events_store
 router = APIRouter(prefix="/system", tags=["system"])
 
 START_TIME = time.time()
-VERSION = "0.1.0"
+VERSION = "1.0.0"
+PREMIUM_FEATURES = [
+    "Grabación continua, por movimiento, inteligente y por horario",
+    "Calidad de grabación, resolución, fps, bitrate y CRF por cámara",
+    "Detección con zonas, máscaras de privacidad y anti-falsos positivos",
+    "IA opcional (personas, vehículos, mascotas) con confianza y clases",
+    "Detección de cámara tapada / manipulación",
+    "Notificaciones Telegram, ntfy, webhook, Discord, Pushover y email",
+    "Control PTZ y presets ONVIF",
+    "Analítica de eventos y gestión de almacenamiento",
+    "Exportación/importación de configuración y autenticación Basic",
+    "Ventana propia de escritorio (Windows) y acceso desde la LAN",
+]
 
 
 def _ultralytics_available() -> bool:
@@ -39,6 +51,8 @@ def info():
     exe = ffmpeg_path()
     return {
         "version": VERSION,
+        "edition": config.data.get("general", {}).get("edition", "Pro"),
+        "features": PREMIUM_FEATURES,
         "python": sys.version.split()[0],
         "platform": f"{platform.system()} {platform.release()}",
         "hostname": platform.node(),
@@ -54,6 +68,28 @@ def info():
         "cameras": len(config.cameras()),
         "events_unacknowledged": events_store.count_unacknowledged(),
         "local_ip": discovery.local_ip(),
+    }
+
+
+@router.get("/dashboard")
+def dashboard():
+    """Resumen premium para el panel: cámaras, estado, eventos y almacenamiento."""
+    cams = manager.cameras_with_status()
+    events = events_store.all_events()
+    day = time.strftime("%Y-%m-%d")
+    today_events = [e for e in events if (e.get("ts") or "").startswith(day)]
+    by_label: dict = {}
+    for e in today_events:
+        by_label[e.get("label", "motion")] = by_label.get(e.get("label", "motion"), 0) + 1
+    return {
+        "cameras": len(cams),
+        "online": sum(1 for c in cams if c.get("health", {}).get("state") == "running"),
+        "recording": sum(1 for c in cams if c.get("health", {}).get("recording")),
+        "events_today": len(today_events),
+        "unacknowledged": events_store.count_unacknowledged(),
+        "by_label": by_label,
+        "storage": storage_stats(),
+        "cameras_with_status": cams,
     }
 
 

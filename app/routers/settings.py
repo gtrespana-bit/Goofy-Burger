@@ -74,6 +74,10 @@ def export_config():
         notif["email"]["password"] = ""
     if notif.get("telegram"):
         notif["telegram"]["bot_token"] = ""
+    if notif.get("discord"):
+        notif["discord"]["webhook_url"] = ""
+    if notif.get("pushover"):
+        notif["pushover"]["app_token"] = ""
     return data
 
 

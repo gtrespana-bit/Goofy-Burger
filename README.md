@@ -6,12 +6,15 @@ ocurrido. Sin nubes, sin cuotas, sin depender de la app del fabricante.
 
 ```text
 Cámara RTSP ─┐
-Webcam USB  ─┼─► Vigía ─► grabación por segmentos / clips por movimiento
-Fichero     ─┘              │
-                            ├─► detección de movimiento + IA (YOLO opcional)
-                            ├─► directo MJPEG en el navegador
-                            ├─► eventos con instantáneas
-                            └─► avisos: Telegram · ntfy · webhook · email
+Webcam USB  ─┼─► Vigía Pro ─► grabación por segmentos / clips por movimiento
+Fichero     ─┘               │
+                             ├─► detección de movimiento + IA (YOLO opcional)
+                             ├─► grabación continua, por movimiento, inteligente o por horario
+                             ├─► calidad, resolución, fps, bitrate y CRF por cámara
+                             ├─► zonas, máscaras de privacidad, tamper y anti-falsos positivos
+                             ├─► directo MJPEG en el navegador / ventana de escritorio
+                             ├─► eventos, instantáneas, analítica y gestión de almacenamiento
+                             └─► avisos: Telegram · ntfy · webhook · Discord · Pushover · email
 ```
 
 ## Instalar como aplicación de escritorio
@@ -87,6 +90,8 @@ pip install ultralytics     # detección con IA (opcional)
 **Vídeo**
 - Directo MJPEG en el navegador (sin plugins ni WebRTC).
 - Grabación continua por segmentos con `-c copy` (copia el stream: ~0 % de CPU).
+- **Modos**: continua, sólo movimiento, **inteligente** (continua + clips) y **por horario**.
+- **Calidad premium**: perfil alto/medio/bajo o personalizado con CRF, preset x264, bitrate, resolución y FPS destino por cámara.
 - Clips por movimiento **con pre-grabación** (guarda los 5 s anteriores al evento).
 - Instantáneas con las cajas de detección dibujadas.
 - Reproductor con miniaturas, descarga y borrado.
@@ -94,14 +99,19 @@ pip install ultralytics     # detección con IA (opcional)
 **Detección**
 - Sustractor de fondo con sensibilidad y tamaño mínimo ajustables.
 - **Zonas** de inclusión/exclusión dibujadas sobre la imagen (olvida la acera o la copa del árbol).
-- Filtro anti-cambios de luz (IR noche/día, faros).
-- Modo IA: sólo avisa si hay persona, coche, perro… (YOLO).
+- **Máscaras de privacidad** que siempre se ignoran (ventanas, puertas, televisores…).
+- **Horarios** de detección (p. ej. sólo de noche, sólo entre semana).
+- Filtro anti-cambios de luz (IR noche/día, faros) y límite de eventos por minuto.
+- **Detección de cámara tapada / manipulación** (taponazo, cambio extremo de imagen).
+- Modo IA: sólo avisa si hay persona, coche, perro… (YOLO), con clases, confianza, frecuencia y tamaño de imagen configurables.
 
 **Alertas y privacidad**
-- Telegram, ntfy, webhook HTTP y correo, con imagen adjunta y tiempo mínimo entre avisos.
+- Telegram, ntfy, webhook HTTP, **Discord**, **Pushover** y correo, con imagen adjunta y tiempo mínimo entre avisos.
+- Filtro por etiqueta en cada cámara (sólo persona, sólo coche…) y límite de avisos por hora.
 - Modo **fuera de casa** para activar sólo ciertas cámaras.
+- Marcas de agua / overlay (fecha, nombre y ubicación) en directo e instantáneas.
 - Usuario/contraseña opcional (HTTP Basic).
-- Retención por días y por espacio máximo en disco, con limpieza automática.
+- Retención por días y por espacio máximo en disco, con limpieza automática y retención propia por cámara.
 
 ## Cómo encuentra tus cámaras
 

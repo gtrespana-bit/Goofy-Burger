@@ -26,6 +26,37 @@ def iso(dt: datetime) -> str:
 
 
 # --------------------------------------------------------------------------
+# Horarios (detección y grabación)
+# --------------------------------------------------------------------------
+def default_schedule() -> List[Dict[str, Any]]:
+    """Vacío = siempre activo. Cada entrada: {'days':[0..6], 'start':'HH:MM', 'end':'HH:MM'}."""
+    return []
+
+
+def is_schedule_active(schedule: Optional[list], now: Optional[Any] = None) -> bool:
+    """Comprueba si la hora actual está dentro de alguna franja del horario."""
+    if not schedule:
+        return True
+    try:
+        now = now or datetime.now()
+        dow = now.weekday()                       # lunes=0 ... domingo=6
+        hm = now.strftime("%H:%M")
+    except Exception:
+        return True
+    for entry in schedule:
+        if not isinstance(entry, dict):
+            continue
+        days = entry.get("days") or []
+        if days and dow not in [int(d) for d in days if str(d).isdigit()]:
+            continue
+        start = str(entry.get("start") or "00:00")[:5]
+        end = str(entry.get("end") or "23:59")[:5]
+        if start <= hm <= end:
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
 # RTSP helpers
 # --------------------------------------------------------------------------
 # Rutas XMEye/iCSee: credenciales dentro de la ruta (user=..&password=..).
@@ -99,6 +130,16 @@ class OnvifConfig(BaseModel):
     use_onvif_stream: bool = True
 
 
+class OverlayConfig(BaseModel):
+    """Marca de agua / información en la vista en directo y en instantáneas."""
+    enabled: bool = False
+    timestamp: bool = True
+    camera_name: bool = True
+    location: bool = False
+    position: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-left"
+    font_scale: float = 0.7
+
+
 class DetectionConfig(BaseModel):
     enabled: bool = True
     sensitivity: int = 55
@@ -108,25 +149,46 @@ class DetectionConfig(BaseModel):
     cooldown_seconds: int = 20
     zones: List[List[List[float]]] = Field(default_factory=list)
     zone_mode: Literal["include", "exclude"] = "include"
+    privacy_mask: List[List[List[float]]] = Field(default_factory=list)
+    ignore_light_change: bool = True
+    max_events_per_minute: int = 0          # 0 = sin límite
+    tamper_enabled: bool = False
+    tamper_sensitivity: int = 40
+    schedule: List[Dict[str, Any]] = Field(default_factory=default_schedule)
     ai_enabled: bool = False
     ai_labels: List[str] = Field(default_factory=lambda: ["person", "car", "dog", "cat"])
     ai_confidence: float = 0.45
     ai_model: str = "yolov8n.pt"
+    ai_every_n: int = 3
+    ai_imgsz: int = 640
 
 
 class RecordingConfig(BaseModel):
-    mode: Literal["continuous", "motion", "off"] = "continuous"
+    mode: Literal["continuous", "motion", "smart", "scheduled", "off"] = "continuous"
+    quality: Literal["high", "medium", "low", "custom"] = "medium"
+    crf: int = 23
+    preset: Literal["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"] = "veryfast"
+    bitrate: str = ""                       # ej. "2500k" (vacío = CRF)
+    width: int = 0                          # 0 = original
+    height: int = 0
+    fps: int = 0                            # 0 = original
     segment_seconds: int = 300
     pre_seconds: int = 5
     post_seconds: int = 10
+    max_event_seconds: int = 600
     codec: Literal["copy", "h264"] = "copy"
     audio: bool = False
+    snapshot_on_motion: bool = True
+    retention_days: int = 0                 # 0 = usar retención global
+    schedule: List[Dict[str, Any]] = Field(default_factory=default_schedule)
 
 
 class AlertConfig(BaseModel):
     enabled: bool = True
     channels: List[str] = Field(default_factory=list)  # vacío = todos los activos
     only_when_away: bool = False
+    labels: List[str] = Field(default_factory=list)    # vacío = todas las etiquetas
+    max_per_hour: int = 0                               # 0 = sin límite
 
 
 class CameraBase(BaseModel):
@@ -140,6 +202,12 @@ class CameraBase(BaseModel):
     device_index: int = 0     # usb
     device_name: str = ""     # usb en Windows (dshow) / macOS (avfoundation)
     group: str = ""           # etiqueta libre: "Entrada", "Garaje"...
+    location: str = ""        # lugar físico
+    tags: List[str] = Field(default_factory=list)
+    notes: str = ""
+    color: str = ""           # color de la tarjeta en el panel
+    order: int = 0
+    overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     onvif: OnvifConfig = Field(default_factory=OnvifConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
@@ -163,6 +231,12 @@ class CameraUpdate(BaseModel):
     device_index: Optional[int] = None
     device_name: Optional[str] = None
     group: Optional[str] = None
+    location: Optional[str] = None
+    tags: Optional[List[str]] = None
+    notes: Optional[str] = None
+    color: Optional[str] = None
+    order: Optional[int] = None
+    overlay: Optional[Dict[str, Any]] = None
     onvif: Optional[Dict[str, Any]] = None
     detection: Optional[Dict[str, Any]] = None
     recording: Optional[Dict[str, Any]] = None
@@ -200,6 +274,12 @@ def build_camera(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str,
         "device_index": int(payload.get("device_index", 0) or 0),
         "device_name": payload.get("device_name", ""),
         "group": payload.get("group", ""),
+        "location": payload.get("location", ""),
+        "tags": list(payload.get("tags") or []),
+        "notes": payload.get("notes", ""),
+        "color": payload.get("color", ""),
+        "order": int(payload.get("order", 0) or 0),
+        "overlay": {**OverlayConfig().model_dump(), **(payload.get("overlay") or {})},
         "onvif": {**OnvifConfig().model_dump(), **(payload.get("onvif") or {})},
         "detection": {**DetectionConfig().model_dump(), **det, **(payload.get("detection") or {})},
         "recording": {**RecordingConfig().model_dump(), **rec, **(payload.get("recording") or {})},

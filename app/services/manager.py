@@ -149,12 +149,18 @@ class CameraManager:
             from ..models import slugify
 
             det = worker.camera.get("detection") or {}
+            rec = worker.camera.get("recording") or {}
             worker.clip = ClipRecorder(
                 worker.camera,
                 clips_dir() / slugify(camera_id),
                 fps=max(8.0, float(det.get("fps", 6))),
                 pre_seconds=0,
                 post_seconds=max(2, seconds),
+                quality=rec.get("quality", "medium"),
+                crf=rec.get("crf", 23),
+                preset=rec.get("preset", "veryfast"),
+                width=int(rec.get("width", 0) or 0),
+                height=int(rec.get("height", 0) or 0),
             )
         worker.clip.trigger()
         return True

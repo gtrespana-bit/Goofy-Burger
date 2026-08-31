@@ -60,18 +60,35 @@ class SegmentRecorder:
     """Mantiene vivo un proceso ffmpeg que trocea el stream en MP4."""
 
     def __init__(self, camera: dict, source, out_dir: Path, segment_seconds: int = 300,
-                 codec: str = "copy", audio: bool = False):
+                 codec: str = "copy", audio: bool = False, quality: str = "medium",
+                 crf: int = 23, preset: str = "veryfast", bitrate: str = "",
+                 width: int = 0, height: int = 0, fps: int = 0):
         self.camera = camera
         self.source = source
         self.out_dir = out_dir
         self.segment_seconds = max(10, int(segment_seconds))
         self.codec = codec
         self.audio = bool(audio)
+        self.quality = quality
+        self.crf = int(crf)
+        self.preset = preset
+        self.bitrate = bitrate or ""
+        self.width = int(width or 0)
+        self.height = int(height or 0)
+        self.fps = int(fps or 0)
         self.proc: Optional[subprocess.Popen] = None
         self.last_start = 0.0
         self.last_error = ""
         self.files_written = 0
         self._stop = threading.Event()
+
+    @staticmethod
+    def _quality_defaults(quality: str) -> tuple:
+        return {
+            "high": (18, "medium"),
+            "medium": (23, "veryfast"),
+            "low": (28, "ultrafast"),
+        }.get(quality or "medium", (23, "veryfast"))
 
     # ---------- construcción del comando ----------
     def build_cmd(self) -> Optional[List[str]]:
@@ -88,11 +105,27 @@ class SegmentRecorder:
         else:
             args += ["-an"]
 
-        if self.codec == "copy":
+        # "Desea recodificar" si hay resolución/fps/bitrate explícitos: copiar
+        # no puede cambiar esas cosas.
+        force_reencode = bool(self.width or self.height or self.fps or self.bitrate)
+        if self.codec == "copy" and not force_reencode:
             args += ["-c:v", "copy"]
         else:
-            args += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            crf, preset = self._quality_defaults(self.quality)
+            crf = self.crf or crf
+            preset = self.preset or preset
+            args += ["-c:v", "libx264", "-preset", preset, "-crf", str(crf),
                      "-pix_fmt", "yuv420p"]
+            if self.bitrate:
+                args += ["-b:v", self.bitrate]
+            if self.width and self.height:
+                args += ["-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2"]
+            elif self.width:
+                args += ["-vf", f"scale={self.width}:-2"]
+            elif self.height:
+                args += ["-vf", f"scale=-2:{self.height}"]
+            if self.fps:
+                args += ["-r", str(self.fps)]
 
         pattern = str(self.out_dir / "%Y%m%dT%H%M%S.mp4")
         args += [
@@ -189,7 +222,9 @@ class ClipRecorder:
 
     def __init__(self, camera: dict, out_dir: Path, fps: float = 10.0,
                  pre_seconds: float = 5.0, post_seconds: float = 10.0,
-                 max_seconds: float = 600.0):
+                 max_seconds: float = 600.0, quality: str = "medium",
+                 crf: int = 23, preset: str = "veryfast",
+                 width: int = 0, height: int = 0):
         self.camera = camera
         self.out_dir = out_dir
         self.fps = max(1.0, float(fps))
@@ -198,6 +233,11 @@ class ClipRecorder:
         # Si el movimiento no cesa (hojas, lluvia, tráfico) el clip se corta
         # en trozos para que no crezca indefinidamente.
         self.max_seconds = max(30.0, float(max_seconds))
+        self.quality = quality
+        self.crf = int(crf)
+        self.preset = preset
+        self.width = int(width or 0)
+        self.height = int(height or 0)
         self.started_at = 0.0
         self.buffer: Deque[Tuple[float, np.ndarray]] = deque()
         self._proc: Optional[subprocess.Popen] = None
@@ -278,11 +318,22 @@ class ClipRecorder:
         if not exe or self._size is None:
             return False
         w, h = self._size
+        if self.width and self.height:
+            w, h = self.width, self.height
+        elif self.width:
+            scale = self.width / max(1, self._size[0])
+            h = max(2, int(self._size[1] * scale))
+            w = self.width
+        elif self.height:
+            scale = self.height / max(1, self._size[1])
+            w = max(2, int(self._size[0] * scale))
+            h = self.height
+        crf, preset = SegmentRecorder._quality_defaults(self.quality)
         cmd = [
             exe, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{w}x{h}", "-r", f"{self.fps:.3f}", "-i", "-",
-            "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-an", "-c:v", "libx264", "-preset", preset, "-crf", str(self.crf or crf),
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path),
         ]
         try:
@@ -312,7 +363,14 @@ class ClipRecorder:
         if self._proc is None or self._proc.stdin is None:
             return
         try:
-            self._proc.stdin.write(frame.tobytes())
+            if self.width and self.height and (frame.shape[1] != self.width or frame.shape[0] != self.height):
+                frame = cv2.resize(frame, (self.width, self.height))
+            elif self.width and frame.shape[1] != self.width:
+                frame = cv2.resize(frame, (self.width, int(frame.shape[0] * (self.width / max(1, frame.shape[1])))))
+            elif self.height and frame.shape[0] != self.height:
+                frame = cv2.resize(frame, (int(frame.shape[1] * (self.height / max(1, frame.shape[0]))), self.height))
+            if frame is not None:
+                self._proc.stdin.write(frame.tobytes())
         except Exception:
             try:
                 if self._proc.stdin:
