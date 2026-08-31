@@ -4,16 +4,14 @@ from __future__ import annotations
 
 
 from concurrent.futures import ThreadPoolExecutor
-import re
 from typing import Any, Dict
-from urllib.parse import urlsplit
 
 import cv2
 from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..config import config
+from ..config import camera_source_key, config
 from ..models import build_camera, redact
 from ..services import onvif_client
 from ..services.capture import probe_snapshot, usb_device_names_windows, list_usb_devices
@@ -29,34 +27,12 @@ def _defaults() -> Dict[str, Any]:
     return {"detection": data.get("detection", {}), "recording": data.get("recording", {})}
 
 
-def _source_key(cam: Dict[str, Any]) -> tuple:
-    """Clave que identifica el dispositivo/canal real de una cámara.
-
-    Sirve para que el asistente y la API no creen el mismo dispositivo-canal
-    dos veces (el motivo de que aparecieran 10 cámaras tras añadir dos veces la
-    misma iCSee multi-lente).
-    """
-    st = cam.get("source_type") or "rtsp"
-    if st == "dvrip":
-        dv = cam.get("dvrip") or {}
-        return ("dvrip", str(dv.get("host", "")).lower(), int(dv.get("channel", -1) or -1))
-    url = cam.get("url") or ""
-    # Sin credenciales: sólo interesa el dispositivo y el canal.
-    host = (urlsplit(url).hostname or "").lower()
-    if host:
-        m = re.search(r"[?&_]channel=(\d+)", url, re.I)
-        if m:
-            return ("channel", host, m.group(1))
-        return ("url", host, redact(url))
-    return ("url", "", redact(url))
-
-
 def _find_duplicate(cam: Dict[str, Any]):
-    key = _source_key(cam)
+    key = camera_source_key(cam)
     for existing in config.cameras():
         if existing.get("id") == cam.get("id"):
             continue
-        if _source_key(existing) == key:
+        if camera_source_key(existing) == key:
             return existing
     return None
 
@@ -96,18 +72,11 @@ def dedupe_cameras():
 
     Cuando se añade dos veces una iCSee multi-lente, al arrancar aparecen
     decenas de cámaras muertas (2 mosaicos + N x cada lente). Esta operación
-    conserva la primera de cada grupo y detiene/elimina el resto.
+    conserva la copia mejor configurada de cada grupo y detiene/elimina el resto.
     """
-    seen: Dict[tuple, Dict[str, Any]] = {}
-    removed: list[Dict[str, Any]] = []
-    for cam in list(config.cameras()):
-        key = _source_key(cam)
-        if key in seen:
-            removed.append(cam)
-            manager.stop(cam.get("id", ""))
-            config.remove_camera(cam.get("id", ""))
-        else:
-            seen[key] = cam
+    removed = config.dedupe_cameras()
+    for cam in removed:
+        manager.stop(cam.get("id", ""))
     if removed:
         manager.sync(config.cameras())
     return {

@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -52,6 +52,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def no_cache_ui(request: Request, call_next):
+    """Evita que la PWA/navegador sirvan una versión vieja de la interfaz."""
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith("/api/") and (
+        path in ("/", "/index.html", "/app.js", "/styles.css", "/service-worker.js", "/manifest.json")
+        or path.endswith((".js", ".css", ".html"))
+    ):
+        response.headers.setdefault("Cache-Control", "no-cache, no-store, must-revalidate")
+    return response
+
 
 # Login/status públicos para que la interfaz pueda mostrar y resolver la
 # autenticación antes de pedir datos protegidos.

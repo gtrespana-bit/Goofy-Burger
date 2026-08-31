@@ -1,6 +1,9 @@
 /* Vigía Pro — service worker para la PWA (app instalable y arranque offline de la UI) */
-const CACHE = 'vigia-pro-v3';
+const CACHE = 'vigia-pro-v4';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json', '/favicon.png', '/icon-192.png', '/icon-512.png'];
+// La app se actualiza al recargar: la interfaz debe venir de la red, no de
+// una caché vieja (eso podía dejar los tabs/configuración sin funcionar).
+const NETWORK_FIRST = new Set(['/', '/index.html', '/styles.css', '/app.js', '/manifest.json']);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -23,6 +26,16 @@ self.addEventListener('fetch', (event) => {
     // red: siempre intenta la red; si falla, devuelve lo que haya en caché
     event.respondWith(
       fetch(event.request).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+  if (NETWORK_FIRST.has(url.pathname)) {
+    event.respondWith(
+      fetch(event.request).then((res) => {
+        const copy = res.clone();
+        if (res.ok) caches.open(CACHE).then(c => c.put(event.request, copy));
+        return res;
+      }).catch(() => caches.match(event.request))
     );
     return;
   }

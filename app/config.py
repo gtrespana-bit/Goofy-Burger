@@ -8,12 +8,15 @@ configuración de un sitio a otro.
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shutil
 import sys
 import threading
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
+from urllib.parse import urlsplit, urlunsplit
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -57,6 +60,7 @@ def default_data_dir() -> Path:
 
 DATA_DIR = default_data_dir()
 CONFIG_PATH = DATA_DIR / "config.json"
+log = logging.getLogger("vigia.config")
 
 RECORDINGS_DIRNAME = "recordings"
 SNAPSHOTS_DIRNAME = "snapshots"
@@ -186,6 +190,94 @@ def default_config() -> Dict[str, Any]:
     }
 
 
+def _clean_camera_url(url: str) -> str:
+    """Versión de la URL sin credenciales (para comparar dispositivos)."""
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        port = f":{parts.port}" if parts.port else ""
+        kept = []
+        for kv in parts.query.split("&"):
+            if not kv:
+                continue
+            key = kv.split("=", 1)[0].lower()
+            if key in ("user", "password", "passwd"):
+                continue
+            kept.append(kv)
+        path = re.sub(
+            r"(user=)[^&/?\s]*&(?:password|passwd)=[^&/?\s]*",
+            "",
+            parts.path,
+            flags=re.I,
+        )
+        return urlunsplit(
+            (parts.scheme, f"{host}{port}", path, "&".join(kept), parts.fragment)
+        )
+    except Exception:
+        return url
+
+
+def camera_source_key(cam: Dict[str, Any]) -> Tuple:
+    """Clave del dispositivo-canal real de una cámara.
+
+    Sirve para no crear/arrancar el mismo dispositivo-canal dos veces
+    (el motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
+    multi-lente).
+    """
+    st = cam.get("source_type") or "rtsp"
+    if st == "dvrip":
+        dv = cam.get("dvrip") or {}
+        return ("dvrip", str(dv.get("host", "")).lower(), int(dv.get("channel", -1) or -1))
+    url = cam.get("url") or ""
+    host = (urlsplit(url).hostname or "").lower()
+    if host:
+        m = re.search(r"[?&_]channel=(\d+)", url, re.I)
+        if m:
+            return ("channel", host, m.group(1))
+        return ("url", host, _clean_camera_url(url))
+    return ("url", "", _clean_camera_url(url))
+
+
+def _camera_quality(cam: Dict[str, Any]) -> int:
+    """Puntuación para conservar la copia mejor configurada entre duplicados."""
+    score = 0
+    if cam.get("enabled"):
+        score += 4
+    if cam.get("username"):
+        score += 1
+    if cam.get("password"):
+        score += 2
+    if (cam.get("dvrip") or {}).get("enabled"):
+        score += 2
+    if (cam.get("onvif") or {}).get("enabled"):
+        score += 1
+    if (cam.get("source_type") or "") == "dvrip":
+        score += 1
+    return score
+
+
+def dedupe_cameras_in_data(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Elimina cámaras con el mismo dispositivo-canal (conserva la mejor)."""
+    cameras = list(data.get("cameras") or [])
+    by_key: Dict[Tuple, Dict[str, Any]] = {}
+    removed: List[Dict[str, Any]] = []
+    for cam in cameras:
+        key = camera_source_key(cam)
+        current = by_key.get(key)
+        if current is None:
+            by_key[key] = cam
+        elif _camera_quality(cam) > _camera_quality(current):
+            removed.append(current)
+            by_key[key] = cam
+        else:
+            removed.append(cam)
+    if removed:
+        data["cameras"] = list(by_key.values())
+    return removed
+
+
 def _deep_merge(base: Dict[str, Any], new: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(base)
     for key, value in new.items():
@@ -222,6 +314,13 @@ class Config:
             else:
                 self._data = default_config()
             self.ensure_dirs()
+            removed = dedupe_cameras_in_data(self._data)
+            if removed:
+                log.warning(
+                    "Se eliminaron %d cámaras duplicadas del mismo dispositivo-canal al arrancar",
+                    len(removed),
+                )
+                self.save()
 
     def save(self) -> None:
         with self._lock:
@@ -320,6 +419,14 @@ class Config:
                     self.save()
                     return True
         return False
+
+    def dedupe_cameras(self) -> List[Dict[str, Any]]:
+        """Elimina duplicados del mismo dispositivo-canal y persiste el cambio."""
+        with self._lock:
+            removed = dedupe_cameras_in_data(self._data)
+            if removed:
+                self.save()
+            return removed
 
 
 config = Config()

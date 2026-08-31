@@ -374,6 +374,15 @@ function showLogin() {
 
 async function boot() {
   setupPwa();
+  // Navegación robusta: se vincula antes de la autenticación para que los
+  // tabs funcionen aunque algo falle después al cargar los datos.
+  $$('#tabs .tab').forEach(tab => {
+    tab.onclick = () => {
+      const view = tab.dataset.view;
+      if (location.hash !== '#/' + view) location.hash = '#/' + view;
+      route();
+    };
+  });
   try {
     const st = await api('/auth/status', { silent401: true });
     state.auth.enabled = !!st.auth_enabled;
@@ -536,7 +545,7 @@ async function showDiagnostics() {
       <pre class="logview">${logLines}</pre>
       ${(d.startup_error_tail || []).length ? `<details style="margin-top:8px"><summary>Errores de arranque (startup_error.log)</summary><pre class="logview">${(d.startup_error_tail || []).map(esc).join('\n')}</pre></details>` : ''}`;
     $('#diag-dedupe').onclick = async () => {
-      if (!confirm('¿Quitar las cámaras duplicadas del mismo dispositivo-canal? Se conservará la primera.')) return;
+      if (!confirm('¿Quitar las cámaras duplicadas del mismo dispositivo-canal? Se conservará la copia mejor configurada.')) return;
       const btn = $('#diag-dedupe');
       btn.disabled = true;
       btn.textContent = 'Limpiando…';

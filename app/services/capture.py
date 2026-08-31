@@ -13,8 +13,8 @@ import subprocess
 import threading
 import time
 from abc import ABC, abstractmethod
-
 from typing import List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -184,12 +184,16 @@ class FfmpegRTSPReader:
             "-",
         ]
         try:
-            self.proc = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=self.frame_size,
-            )
+            spawn_kwargs: dict = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "bufsize": self.frame_size,
+            }
+            if IS_WIN:
+                # Evita la ventana negra de consola en Windows al abrir cada
+                # flujo RTSP (los reintentos la hacían parpadear continuamente).
+                spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            self.proc = subprocess.Popen(args, **spawn_kwargs)
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             self.proc = None
@@ -262,7 +266,7 @@ class DvripSource(Source):
     """
 
     label = "dvrip"
-    first_frame_timeout = 12.0
+    first_frame_timeout = 6.0
 
     def __init__(self, camera: dict):
         super().__init__(camera)
@@ -342,16 +346,22 @@ class DvripSource(Source):
             return False
         demux = "hevc" if self._codec in ("h265", "hevc") else "h264"
         try:
+            spawn_kwargs: dict = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "bufsize": 1 << 20,
+            }
+            if IS_WIN:
+                # Sin ventana de consola al decodificar DVRIP.
+                spawn_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
             self._ff_proc = subprocess.Popen(
                 [
                     exe, "-hide_banner", "-nostdin", "-loglevel", "error",
                     "-f", demux, "-i", "-",
                     "-f", "image2pipe", "-vcodec", "bmp", "-",
                 ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1 << 20,
+                **spawn_kwargs,
             )
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
@@ -501,6 +511,7 @@ class RtspSource(Cv2Source):
     def __init__(self, camera: dict):
         super().__init__(camera)
         self.ffmpeg: Optional[FfmpegRTSPReader] = None
+        self.dvrip_fallback: Optional[DvripSource] = None
 
     def _build_target(self):
         cam = self.camera
@@ -510,12 +521,74 @@ class RtspSource(Cv2Source):
         url = with_credentials(url, cam.get("username", ""), cam.get("password", ""))
         return url
 
+    @staticmethod
+    def _is_icsee_target(target: str) -> bool:
+        t = target
+        return (("user=" in t or "user%3D" in t)
+                and ("password=" in t or "passwd=" in t
+                     or "password%3D" in t or "passwd%3D" in t))
+
+    def _build_dvrip_camera(self, target: str) -> dict:
+        """Copia de la cámara como DVRIP/NetIP para iCSee multi-lente."""
+        cam = dict(self.camera)
+        urlhost = urlsplit(target)
+        host = urlhost.hostname or ""
+        parts = urlsplit(self.camera.get("url") or "")
+        host = host or parts.hostname or ""
+        dvrip = dict(cam.get("dvrip") or {})
+        dvrip.setdefault("enabled", True)
+        dvrip.setdefault("stream", "main")
+        dvrip.setdefault("codec", "auto")
+        if host:
+            dvrip["host"] = host
+        dvrip["port"] = int(dvrip.get("port") or 34567)
+        # RTSP channel=1/2/3 de XMEye suele ser lente 1/2/3; DVRIP es 0/1/2.
+        m = re.search(r"[?&_]channel=(\d+)", target or self.camera.get("url", ""), re.I)
+        if m:
+            rtsp_ch = int(m.group(1))
+            dvrip["channel"] = max(0, rtsp_ch - 1) if rtsp_ch > 0 else 0
+        else:
+            dvrip.setdefault("channel", 0)
+        cam["source_type"] = "dvrip"
+        cam["dvrip"] = dvrip
+        cam["url"] = f"dvrip://{host}:{dvrip['port']}/channel={int(dvrip.get('channel', 0) or 0) + 1}"
+        return cam
+
+    def _open_dvrip_fallback(self, target: str) -> bool:
+        """Intenta iCSee vía DVRIP/NetIP cuando RTSP da 401 o no abre."""
+        try:
+            src = DvripSource(self._build_dvrip_camera(target))
+            if src.open():
+                self.dvrip_fallback = src
+                self.last_error = ""
+                return True
+            self.last_error = getattr(src, "last_error", "") or "DVRIP no pudo abrir el canal"
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+        return False
+
     def open(self) -> bool:
         target = self._build_target()
         if target is None:
             self.last_error = "La cámara no tiene URL RTSP"
             return False
         self.last_error = ""
+        # iCSee/XMEye multi-lente suele fallar en RTSP (401) pero funciona por
+        # DVRIP/NetIP 34567. Si la URL ya trae user=..password=..&channel=N,
+        # usamos DVRIP directamente: evita abrir ventanas ffmpeg y repetir 401.
+        if self._is_icsee_target(target):
+            try:
+                from .dvrip import available as dvrip_available
+                dvrip_ok = bool(dvrip_available())
+            except Exception:
+                dvrip_ok = False
+            if dvrip_ok:
+                return self._open_dvrip_fallback(target)
+            # Sin librería DVRIP seguimos probando RTSP por si OpenCV lo abre.
+        if (self.camera.get("dvrip") or {}).get("enabled"):
+            if self._open_dvrip_fallback(target):
+                return True
+            self.last_error = ""
         # Primero intentamos con OpenCV (rápido y con buena resolución).
         if super().open():
             # Algunos backends OpenCV dicen "abierto" aunque la cámara no dé
@@ -546,9 +619,14 @@ class RtspSource(Cv2Source):
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             self.ffmpeg = None
+        # Último intento para XMEye/iCSee: RTSP da 401 pero DVRIP suele abrir.
+        if not self.dvrip_fallback and self._open_dvrip_fallback(target):
+            return True
         return False
 
     def read(self):
+        if self.dvrip_fallback is not None:
+            return self.dvrip_fallback.read()
         if self.ffmpeg is not None:
             return self.ffmpeg.read()
         return super().read()
@@ -561,14 +639,26 @@ class RtspSource(Cv2Source):
             except Exception:
                 pass
             self.ffmpeg = None
+        if self.dvrip_fallback is not None:
+            try:
+                self.dvrip_fallback.release()
+            except Exception:
+                pass
+            self.dvrip_fallback = None
 
     @property
     def record_url(self) -> str:
+        if self.dvrip_fallback is not None:
+            # DVRIP no se graba con ffmpeg RTSP; mejor no intentar abrir un
+            # flujo que ya sabemos que da 401 (evita ventanas y logs).
+            return ""
         cam = self.camera
         return with_credentials(cam.get("url") or "", cam.get("username", ""), cam.get("password", ""))
 
     @property
     def ffmpeg_input_args(self) -> List[str]:
+        if self.dvrip_fallback is not None:
+            return []
         return ["-rtsp_transport", "tcp", "-i", self.record_url]
 
 
