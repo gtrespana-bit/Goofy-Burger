@@ -1,0 +1,137 @@
+# 🎥 Vigía
+
+Sistema de videovigilancia casero, **propio y auto-alojado**: añade tus cámaras,
+velas en directo, grábalas, recibe avisos cuando pasa algo y revisa después lo
+ocurrido. Sin nubes, sin cuotas, sin depender de la app del fabricante.
+
+```text
+Cámara RTSP ─┐
+Webcam USB  ─┼─► Vigía ─► grabación por segmentos / clips por movimiento
+Fichero     ─┘              │
+                            ├─► detección de movimiento + IA (YOLO opcional)
+                            ├─► directo MJPEG en el navegador
+                            ├─► eventos con instantáneas
+                            └─► avisos: Telegram · ntfy · webhook · email
+```
+
+## Arrancar en 2 minutos
+
+**Windows** · doble clic en `start.bat` (o `start.bat --lan` para abrirlo desde el móvil).
+
+**macOS / Linux**
+
+```bash
+./start.sh            # sólo en este equipo
+./start.sh --lan      # accesible desde otros equipos de la casa
+```
+
+Abre <http://localhost:8000> y pulsa **+ Añadir cámara**.
+
+> ¿Quieres verlo funcionando antes de conectar nada? Crea una cámara de
+> **tipo demo**: genera vídeo sintético con movimiento y verás directo,
+> detección, eventos y clips al instante.
+
+### A mano
+
+```bash
+python -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python vigia.py --lan --port 8000
+```
+
+## Requisitos
+
+| Qué | Obligatorio | Para qué |
+|---|---|---|
+| Python 3.9+ | ✅ | todo |
+| **ffmpeg** | recomendado | grabación sin recodificar y miniaturas. Si no está, Vigía intenta usar el binario de `pip install imageio-ffmpeg` |
+| `onvif-zeep` | opcional | autodescubrimiento ONVIF, control PTZ (mover/zoom), presets, snapshots |
+| `ultralytics` | opcional | detectar **personas, vehículos y mascotas** con YOLO en vez de "movimiento" a secas |
+
+```bash
+pip install onvif-zeep      # PTZ y descubrimiento
+pip install ultralytics     # detección con IA
+```
+
+## Qué sabe hacer
+
+**Cámaras**
+- RTSP (Reolink, Hikvision, Dahua, Amcrest, Tapo vía rtsp…), webcams USB y ficheros de vídeo.
+- Flujo principal para grabar + flujo secundario para detectar/ver en directo (así una cámara 4K no te come la CPU).
+- Autodescubrimiento: ONVIF (WS-Discovery), escaneo de la subred y sondeo de rutas RTSP habituales por fabricante.
+- Prueba de conexión con foto real antes de guardar.
+
+**Vídeo**
+- Directo MJPEG en el navegador (sin plugins ni WebRTC).
+- Grabación continua por segmentos con `-c copy` (copia el stream: ~0 % de CPU).
+- Clips por movimiento **con pre-grabación** (guarda los 5 s anteriores al evento).
+- Instantáneas con las cajas de detección dibujadas.
+- Reproductor con miniaturas, descarga y borrado.
+
+**Detección**
+- Sustractor de fondo con sensibilidad y tamaño mínimo ajustables.
+- **Zonas** de inclusión/exclusión dibujadas sobre la imagen (olvida la acera o la copa del árbol).
+- Filtro anti-cambios de luz (IR noche/día, faros).
+- Modo IA: sólo avisa si hay persona, coche, perro… (YOLO).
+
+**Alertas y privacidad**
+- Telegram, ntfy, webhook HTTP y correo, con imagen adjunta y tiempo mínimo entre avisos.
+- Modo **fuera de casa** para activar sólo ciertas cámaras.
+- Usuario/contraseña opcional (HTTP Basic).
+- Retención por días y por espacio máximo en disco, con limpieza automática.
+
+## Cómo encuentra tus cámaras
+
+1. **ONVIF** (estándar): Vigía manda un Probe WS-Discovery a `239.255.255.250:3702` y las cámarascontestan con su nombre, modelo y URL de servicio.
+2. **Escaneo de red**: recorre tu subred buscando puertos típicos (554, 8554, 80, 8080…).
+3. **Sondeo RTSP**: prueba rutas conocidas (`/h264Preview_01_main`, `/Streaming/Channels/101`, `/cam/realmonitor?channel=1&subtype=0`…) con `DESCRIBE`. Si la cámara responde 200 o 401, existe.
+
+URLs típicas:
+
+| Marca | Flujo principal | Flujo secundario |
+|---|---|---|
+| Reolink | `rtsp://IP:554/h264Preview_01_main` | `…/h264Preview_01_sub` |
+| Hikvision / LTS | `rtsp://IP:554/Streaming/Channels/101` | `…/102` |
+| Dahua / Amcrest | `rtsp://IP:554/cam/realmonitor?channel=1&subtype=0` | `…subtype=1` |
+
+Si la cámara pide usuario, ponlo en el formulario y Vigía lo inyecta en la URL.
+
+## Dónde se guarda todo
+
+```
+data/
+├── config.json          # cámaras y ajustes (cópialo para hacer backup)
+├── recordings/<cámara>/ # segmentos continuos  20260830T142500.mp4
+├── clips/<cámara>/      # clips por movimiento
+├── snapshots/<cámara>/  # instantáneas de los eventos
+├── thumbs/              # miniaturas cacheadas
+├── events.json          # historial de eventos
+└── logs/vigia.log
+```
+
+Todo se puede mover: **Ajustes → Almacenamiento → Carpeta de grabaciones**.
+
+## API
+
+La interfaz habla con una API REST documentada en <http://localhost:8000/docs>. Lo más útil:
+
+```bash
+curl localhost:8000/api/cameras                          # estado de las cámaras
+curl localhost:8000/api/events?limit=10                  # últimos eventos
+curl -X POST localhost:8000/api/system/discover \
+     -H 'Content-Type: application/json' \
+     -d '{"mode":"onvif","username":"admin","password":"1234"}'
+curl -X POST localhost:8000/api/cameras/ID/record?seconds=60   # grabación manual
+```
+
+## Consejos
+
+- **Usa el flujo secundario** para detectar: 640 px son suficientes y tu CPU lo agradece.
+- Empieza con sensibilidad 55 y bájala si te saltan avisos por lluvia u hojas.
+- Dibuja zonas en las cámaras exteriores: elimina el 90 % de los falsos positivos.
+- Un disco de 1 TB con 4 cámaras a 1080p/15 fps ronda los 10-14 días de retención.
+- Para acceder desde fuera de casa, usa VPN (Tailscale/WireGuard) antes que abrir puertos.
+
+## Licencia
+
+MIT. Úsalo, cámbialo y hazlo tuyo.
