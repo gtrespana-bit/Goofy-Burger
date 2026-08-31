@@ -57,13 +57,25 @@ COMMON_RTSP_PATHS = [
 # Aquí las credenciales van EMBEBIDAS EN LA RUTA, no en el usuario de la URL.
 # {user}, {password} y {channel} se sustituyen en ``probe_rtsp``.
 # En las cámaras multi-lente (p. ej. "3 en 1"), cada lente es un canal distinto.
+# Nota: algunos firmwares XiongMai usan ``passwd=`` en vez de ``password=`` y
+# las variantes ``_passwd=``, así que las probamos todas.
 XMEYE_RTSP_PATHS = [
     "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream",
     "/user={user}&password={password}&channel={channel}&stream=1.sdp?real_stream",
+    "/user={user}&passwd={password}&channel={channel}&stream=0.sdp?real_stream",
+    "/user={user}&passwd={password}&channel={channel}&stream=1.sdp?real_stream",
     "/user={user}_password={password}_channel={channel}_stream=0.sdp?real_stream",
     "/user={user}_password={password}_channel={channel}_stream=1.sdp?real_stream",
+    "/user={user}_passwd={password}_channel={channel}_stream=0.sdp?real_stream",
+    "/user={user}_passwd={password}_channel={channel}_stream=1.sdp?real_stream",
     "/user={user}&password={password}&channel={channel}&stream=0.sdp",
+    "/user={user}&password={password}&channel={channel}&stream=1.sdp",
     "/user={user}_password={password}_channel={channel}_stream=0.sdp",
+    "/user={user}_password={password}_channel={channel}_stream=1.sdp",
+    "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream&video=0",
+    "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream&video=1",
+    "/user={user}&password={password}&channel={channel}&stream=0",
+    "/user={user}&password={password}&channel={channel}&stream=1",
 ]
 
 # Canales a sondear en cámaras XMEye/iCSee. La mayoría tienen 1, pero las
@@ -335,3 +347,128 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
                 valid.append(url)
     # Las que devuelven 200 primero
     return valid
+
+
+# --------------------------------------------------------------------------
+# 4. Diagnóstico de una IP (iCSee / XMEye)
+# --------------------------------------------------------------------------
+# Puertos típicos de una cámara iCSee/XMEye (chip XiongMai).
+ICSEE_PORTS = [554, 8554, 8899, 34567, 8000, 80, 8080, 37777, 10554, 9999]
+
+ICSEE_PORT_LABELS = {
+    554: "RTSP (vídeo)",
+    8554: "RTSP alternativo",
+    8899: "ONVIF (control/PTZ)",
+    34567: "DVRIP/NetIP (protocolo propietario iCSee)",
+    8000: "web / stream",
+    80: "web (interfaz)",
+    8080: "web alternativo",
+    37777: "Dahua/DVR",
+    10554: "RTSP alternativo",
+    9999: "stream",
+}
+
+
+def port_report(host: str, ports=None, timeout: float = 1.0,
+                workers: int = 24) -> List[Dict]:
+    """Comprueba qué puertos típicos de cámara iCSee están abiertos en un host."""
+    ports = ports or ICSEE_PORTS
+
+    def check(p):
+        try:
+            open_ = _port_open(host, p, timeout)
+        except Exception:
+            open_ = False
+        return {"port": p, "open": open_, "label": ICSEE_PORT_LABELS.get(p, "")}
+
+    if not ports:
+        return []
+    if len(ports) == 1 or not hasattr(ThreadPoolExecutor, "__name__"):
+        return [check(p) for p in ports]
+    with ThreadPoolExecutor(max_workers=min(workers, len(ports))) as pool:
+        return list(pool.map(check, ports))
+
+
+def diagnose_camera(host: str, username: str = "", password: str = "",
+                    timeout: float = 1.2, rtsp_timeout: float = 1.8) -> Dict:
+    """Reporte completo de una IP concreta, pensado para cámaras iCSee/XMEye.
+
+    Comprueba puertos, sondea RTSP con todas las variantes de ruta y conjuntos
+    de credenciales habituales, y devuelve además pistas de configuración según
+    lo que encuentre (RTSP apagado, credenciales RTSP distintas de la web…).
+    """
+    host = (host or "").strip()
+    report: Dict = {
+        "host": host,
+        "ports": port_report(host, timeout=timeout),
+        "rtsp": [],
+        "rtsp_admin_empty": [],
+        "hints": [],
+    }
+
+    # Sólo sondeamos RTSP si algún puerto RTSP está abierto (si no, el
+    # DESCRIBE no va a responder y perderíamos tiempo a lo tonto).
+    opened = {p["port"] for p in report["ports"] if p["open"]}
+    rtsp_ports = [p for p in (554, 8554, 10554) if p in opened]
+    if 8000 in opened:
+        rtsp_ports.append(8000)
+
+    if rtsp_ports:
+        report["rtsp"] = probe_rtsp(
+            host, username, password, ports=rtsp_ports, timeout=rtsp_timeout,
+        )
+        # Con credenciales admin/vacía (la típica de RTSP en XiongMai) para
+        # distinguir entre "RTSP apagado" y "credenciales web no sirven para RTSP".
+        if (username or "").lower() != "admin" or password:
+            report["rtsp_admin_empty"] = probe_rtsp(
+                host, "admin", "", ports=rtsp_ports, timeout=rtsp_timeout,
+            )
+
+    port_open = {p: p in opened for p in [80, 8080, 8899, 34567, 554]}
+
+    if report["rtsp"]:
+        report["hints"].append(
+            "RTSP disponible: pega la URL que prefieras en 'URL RTSP'. "
+            "Si sólo funcionan las de 'admin' sin contraseña, usa esa cuenta "
+            "para RTSP (independiente de la cuenta con la que entras en la app iCSee)."
+        )
+    else:
+        if report["rtsp_admin_empty"]:
+            report["hints"].append(
+                "RTSP responde con admin/contraseña vacía, pero no con tus "
+                "credenciales (Ruben). La cuenta RTSP de las iCSee/XMEye suele "
+                "ser 'admin' sin contraseña, DISTINTA de la de la app. "
+                "Pega una URL con 'user=admin&password=' directamente."
+            )
+        elif not port_open.get(554):
+            report["hints"].append(
+                "El puerto RTSP (554) está cerrado: la cámara NO expone RTSP ahora mismo. "
+                "Entra por la web (http://IP/) o por la app iCSee → ajustes del "
+                "dispositivo y comprueba que RTSP está ACTIVADO (puerto 554). "
+                "Reinicia la cámara y vuelve a diagnosticar."
+            )
+        else:
+            report["hints"].append(
+                "El puerto 554 está abierto pero ninguna variante RTSP respondió. "
+                "Prueba a reiniciar la cámara y a comprobar en la app iCSee que "
+                "tiene 'acceso por RTSP' habilitado y la contraseña RTSP puesta."
+            )
+
+    if port_open.get(8899):
+        report["hints"].append(
+            "Puerto 8899 abierto: la cámara habla ONVIF (control/mover PTZ). "
+            "En Vigía se configura con 'user=admin' y la contraseña de admin de la cámara."
+        )
+    if port_open.get(34567):
+        report["hints"].append(
+            "Puerto 34567 abierto: protocolo propietario DVRIP/NetIP de iCSee "
+            "(así conecta la app). No se usa para vídeo en Vigía, pero confirma "
+            "que es una cámara iCSee/XMEye."
+        )
+    if not report["rtsp"] and not port_open.get(554) and not port_open.get(80):
+        report["hints"].append(
+            "No se ve ningún puerto abierto: revisa que Vigía esté en la MISMA "
+            "red que la cámara (mismo router, mismo 192.168.0.x) y que no haya "
+            "cortafuegos ni 'aislamiento de cliente' en el router."
+        )
+    return report

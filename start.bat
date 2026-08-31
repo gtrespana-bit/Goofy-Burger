@@ -9,18 +9,16 @@ if not exist ".venv" (
 
 call .venv\Scripts\activate.bat
 
-python -c "import fastapi, uvicorn, cv2, requests" >nul 2>&1
+python -c "import fastapi, uvicorn, cv2, requests, onvif, imageio_ffmpeg" >nul 2>&1
 if errorlevel 1 (
-    echo Instalando dependencias...
+    echo Instalando dependencias (incluye ONVIF y ffmpeg)...
     python -m pip install --upgrade pip
     python -m pip install -r requirements.txt
 )
 
 where ffmpeg >nul 2>&1
 if errorlevel 1 (
-    echo ffmpeg no esta en el PATH. Instalando la version de pip...
-    python -m pip install imageio-ffmpeg
-    echo AVISO: para mejor rendimiento instala ffmpeg y anadelo al PATH.
+    echo ffmpeg no esta en el PATH. Se usara el binario de pip (imageio-ffmpeg).
 )
 
 set HOST=127.0.0.1

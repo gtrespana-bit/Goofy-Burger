@@ -99,6 +99,29 @@ class OnvifDevice:
         except Exception:
             return ""
 
+    def profiles_with_streams(self, protocol: str = "RTSP") -> List[Dict[str, Any]]:
+        """Perfiles ONVIF, cada uno enriquecido con su URL RTSP y snapshot.
+
+        En las cámaras iCSee/XMEye **multi-lente** cada lente suele aparecer
+        como un perfil de medios independiente, con su propia URL RTSP. Esto es
+        la vía fiable para detectarlas todas (más fiable que los canales RTSP).
+        """
+        profiles = self.profiles()
+        out = []
+        for profile in profiles:
+            token = profile["token"]
+            entry = dict(profile)
+            try:
+                entry["rtsp"] = self.stream_uri(token, protocol=protocol)
+            except Exception:
+                entry["rtsp"] = ""
+            try:
+                entry["snapshot"] = self.snapshot_uri(token)
+            except Exception:
+                entry["snapshot"] = ""
+            out.append(entry)
+        return out
+
     def _default_token(self) -> str:
         if self._profile_token:
             return self._profile_token

@@ -110,6 +110,82 @@ def discover(req: DiscoverRequest):
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
+@router.post("/diagnose")
+def diagnose(req: DiscoverRequest):
+    """Diagnóstico de una IP concreta (pensado para cámaras iCSee/XMEye).
+
+    Comprueba puertos, sondea todas las variantes RTSP (incluida la de
+    'admin' sin contraseña) y, si el puerto ONVIF (8899) está abierto,
+    enumera los perfiles de vídeo (cada lente de una multi-lente = un perfil
+    con su propia URL RTSP) para poder añadirlas todas de golpe.
+    """
+    if not req.target:
+        raise HTTPException(400, "Indica la IP de la cámara en 'target'")
+    try:
+        report = discovery.diagnose_camera(
+            req.target, req.username, req.password,
+            timeout=max(0.8, req.timeout / 3),
+            rtsp_timeout=max(1.2, req.timeout / 3),
+        )
+        # Si ONVIF está abierto, enumera perfiles (multi-lente) con su stream.
+        onvif_port_open = any(
+            p["port"] == 8899 and p["open"] for p in report.get("ports", [])
+        )
+        if onvif_port_open:
+            if onvif_client.ONVIF_AVAILABLE:
+                report["onvif_profiles"] = _probe_onvif_profiles(
+                    req.target, req.username, req.password
+                )
+                if not report["onvif_profiles"]:
+                    report["hints"].append(
+                        "El puerto ONVIF (8899) está abierto pero no se pudieron "
+                        "leer perfiles con esas credenciales. Prueba con 'admin' "
+                        "y la contraseña de admin de la cámara (no la de la app)."
+                    )
+            else:
+                report["hints"].append(
+                    "El puerto ONVIF (8899) está abierto: la cámara habla ONVIF "
+                    "(detectar todas las lentes y mover/PTZ). Instala la "
+                    "dependencia con 'pip install onvif-zeep' y vuelve a "
+                    "diagnosticar."
+                )
+        return report
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+
+
+def _probe_onvif_profiles(host: str, username: str, password: str) -> list:
+    """Enumera perfiles ONVIF en el puerto 8899 probando varias credenciales.
+
+    Devuelve lista de perfiles con su URL RTSP (uno por lente en multi-lente).
+    """
+    import logging
+
+    log = logging.getLogger("vigia")
+    candidates = [(username or "", password or "")]
+    if (username or "").lower() != "admin":
+        candidates += [("admin", password or ""), ("admin", "")]
+    if not candidates[0][0]:
+        candidates = [("admin", ""), ("admin", password or "")]
+
+    for u, pw in candidates:
+        try:
+            device = onvif_client.OnvifDevice(host, 8899, u, pw)
+            device.connect()
+            profiles = device.profiles_with_streams()
+            if profiles:
+                return {
+                    "username": u,
+                    "password": bool(pw),
+                    "profiles": profiles,
+                }
+        except Exception as exc:
+            log.debug("ONVIF 8899 con %s: %s", u or "(vacío)", exc)
+    return {}
+
+
 @router.get("/usb")
 def usb_devices():
     return {"devices": list_usb_devices()}

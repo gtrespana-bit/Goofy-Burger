@@ -11,3 +11,9 @@ Thumbs.db
 # Modelos de IA descargados
 *.pt
 *.onnx
+
+# Empaquetado (PyInstaller / Inno Setup): resultados, nunca al repo
+dist/
+build/_work/
+build/warn-*.txt
+build/*.log
