@@ -3,11 +3,46 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Vigía · Videovigilancia en casa</title>
+<title>Vigía Pro · Videovigilancia inteligente</title>
 <link rel="icon" href="/favicon.png" type="image/png" />
-<link rel="stylesheet" href="/styles.css" />
+<link rel="manifest" href="/manifest.json" />
+<meta name="theme-color" content="#0d1117" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<link rel="apple-touch-icon" href="/icon-192.png" />
+<link rel="stylesheet" href="/styles.css?v=20260831" />
 </head>
 <body>
+<script>
+  // Si la interfaz falla (sintaxis, localStorage, etc.), lo mostramos en
+  // pantalla en vez de dejar la ventana en blanco: facilita diagnosticar
+  // un .exe con una versión vieja de la web.
+  function showJsError(msg) {
+    try {
+      var el = document.getElementById('js-error');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'js-error';
+        el.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:#ff6b6b;color:#fff;padding:10px 14px;font:13px/1.4 system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.4)';
+        (document.body || document.documentElement).appendChild(el);
+      }
+      el.textContent = '⚠ Error de interfaz: ' + String(msg || '').slice(0, 500) + ' · recarga con Ctrl+Shift+R';
+    } catch (e) { /* no podemos hacer más */ }
+  }
+  window.addEventListener('error', function (ev) {
+    try {
+      var msg = ev.error && ev.error.message ? ev.error.message : ev.message;
+      showJsError(msg);
+    } catch (e) { /* no podemos hacer más */ }
+  });
+  window.addEventListener('unhandledrejection', function (ev) {
+    try {
+      var r = ev.reason;
+      var msg = (r && (r.message || r.stack || String(r))) || 'promesa rechazada';
+      showJsError(msg);
+    } catch (e) { /* no podemos hacer más */ }
+  });
+</script>
 <header class="topbar">
   <div class="brand">
     <span class="logo">🎥</span>
@@ -20,16 +55,22 @@
   <div class="topstats" id="topstats"></div>
 
   <div class="topactions">
+    <button class="btn ghost" id="btn-alarm" title="Sonido de alarma">🔔</button>
+    <button class="btn ghost" id="btn-diagnose" title="Diagnóstico y errores" style="display:none">🩺</button>
     <button class="btn ghost" id="btn-away" title="Modo fuera de casa">🏠 En casa</button>
     <button class="btn ghost" id="btn-refresh" title="Actualizar">⟳</button>
+    <button class="btn ghost" id="btn-install" title="Instalar Vigía en este dispositivo" style="display:none">⬇ Instalar</button>
+    <button class="btn ghost" id="btn-logout" title="Cerrar sesión" style="display:none">🚪</button>
     <button class="btn primary" id="btn-add">+ Añadir cámara</button>
   </div>
 </header>
 
 <nav class="tabs" id="tabs">
   <button class="tab active" data-view="dashboard">Directo</button>
+  <button class="tab" data-view="multiview">Muro</button>
   <button class="tab" data-view="events">Eventos <span class="pill" id="events-pill"></span></button>
   <button class="tab" data-view="recordings">Grabaciones</button>
+  <button class="tab" data-view="reports">Informes</button>
   <button class="tab" data-view="settings">Ajustes</button>
 </nav>
 
@@ -48,6 +89,44 @@
 
 <div class="toasts" id="toasts"></div>
 
-<script src="/app.js"></script>
+<script src="/app.js?v=20260831"></script>
+<script>
+  // PWA: la app vieja con service-worker anterior podía dejar en caché un
+  // app.js que fallaba (tabs/añadir/borrar cámaras). Aquí forzamos una única
+  // recarga cuando entra el nuevo SW y vaciamos las cachés antiguas.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      const setFlag = (k) => { try { sessionStorage.setItem(k, '1'); } catch (e) {} };
+      const hasFlag = (k) => { try { return sessionStorage.getItem(k) === '1'; } catch (e) { return false; } };
+      (async () => {
+        try {
+          // Borra cachés de PWAs anteriores (vigia-pro-v3/v4, etc.), pero
+          // respeta la caché actual v5 para no dejar la app sin offline.
+          if (window.caches && caches.keys) {
+            const keys = await caches.keys();
+            await Promise.all(keys
+              .filter(k => /^vigia-pro-v[1-4]$/.test(k))
+              .map(k => caches.delete(k)));
+          }
+          const reg = await navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' });
+          if (reg.waiting && !hasFlag('vigia-sw-skip')) {
+            setFlag('vigia-sw-skip');
+            reg.waiting.postMessage({ type: 'SKIP_WAITING' });
+          }
+          if (navigator.serviceWorker.controller) {
+            setFlag('vigia-sw-skip');
+            reg.update().catch(() => {});
+          }
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (!hasFlag('vigia-sw-refresh')) {
+              setFlag('vigia-sw-refresh');
+              location.reload();
+            }
+          });
+        } catch (e) { /* sin servicios de PWA, no es bloqueante */ }
+      })();
+    });
+  }
+</script>
 </body>
 </html>

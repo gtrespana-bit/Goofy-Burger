@@ -9,7 +9,7 @@ from typing import Dict, List, Tuple
 
 from .. import events_store
 from ..config import clips_dir, config, recordings_dir, snapshots_dir
-from ..models import iso, utc_now
+from ..models import iso, slugify, utc_now
 from datetime import timedelta
 
 VIDEO_EXT = {".mp4", ".mkv", ".ts", ".mov", ".m4v"}
@@ -70,13 +70,27 @@ def prune(retention_days: int = None, max_gb: float = None,
     if also_snapshots:
         roots.append(snapshots_dir())
 
+    # Retención propia por cámara: cada carpeta usa su recording.retention_days
+    # si está configurado; si no, hereda la retención global.
+    per_camera = {}
+    for cam in config.cameras():
+        own = int((cam.get("recording") or {}).get("retention_days", 0) or 0)
+        if own:
+            per_camera[slugify(cam.get("id", ""))] = own
+
     for root in roots:
         for path in list(_iter_files(root)):
             try:
                 st = path.stat()
             except Exception:
                 continue
-            if st.st_mtime < cutoff:
+            rel = path.relative_to(root)
+            cam_slug = rel.parts[0] if rel.parts else ""
+            own_days = per_camera.get(cam_slug)
+            local_cutoff = cutoff
+            if own_days:
+                local_cutoff = time.time() - float(own_days) * 86400
+            if st.st_mtime < local_cutoff:
                 try:
                     path.unlink()
                     deleted["files"] += 1

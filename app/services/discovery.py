@@ -20,6 +20,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
+from . import dvrip
+
 MULTICAST_GROUP = "239.255.255.250"
 MULTICAST_PORT = 3702
 
@@ -60,22 +62,37 @@ COMMON_RTSP_PATHS = [
 # Nota: algunos firmwares XiongMai usan ``passwd=`` en vez de ``password=`` y
 # las variantes ``_passwd=``, así que las probamos todas.
 XMEYE_RTSP_PATHS = [
+    # user/password dentro de la ruta con '&'
     "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream",
     "/user={user}&password={password}&channel={channel}&stream=1.sdp?real_stream",
     "/user={user}&passwd={password}&channel={channel}&stream=0.sdp?real_stream",
     "/user={user}&passwd={password}&channel={channel}&stream=1.sdp?real_stream",
-    "/user={user}_password={password}_channel={channel}_stream=0.sdp?real_stream",
-    "/user={user}_password={password}_channel={channel}_stream=1.sdp?real_stream",
-    "/user={user}_passwd={password}_channel={channel}_stream=0.sdp?real_stream",
-    "/user={user}_passwd={password}_channel={channel}_stream=1.sdp?real_stream",
     "/user={user}&password={password}&channel={channel}&stream=0.sdp",
     "/user={user}&password={password}&channel={channel}&stream=1.sdp",
-    "/user={user}_password={password}_channel={channel}_stream=0.sdp",
-    "/user={user}_password={password}_channel={channel}_stream=1.sdp",
+    "/user={user}&password={password}&channel={channel}&stream=0.sdp?",
+    "/user={user}&password={password}&channel={channel}&stream=1.sdp?",
     "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream&video=0",
     "/user={user}&password={password}&channel={channel}&stream=0.sdp?real_stream&video=1",
     "/user={user}&password={password}&channel={channel}&stream=0",
     "/user={user}&password={password}&channel={channel}&stream=1",
+    # variantes con guion bajo (muy comunes en XMEye)
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp?real_stream",
+    "/user={user}_password={password}_channel={channel}_stream=1.sdp?real_stream",
+    "/user={user}_passwd={password}_channel={channel}_stream=0.sdp?real_stream",
+    "/user={user}_passwd={password}_channel={channel}_stream=1.sdp?real_stream",
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp",
+    "/user={user}_password={password}_channel={channel}_stream=1.sdp",
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp?",
+    "/user={user}_password={password}_channel={channel}_stream=1.sdp?",
+    "/user={user}_password={password}_channel={channel}_stream=0.sdp?real_stream",
+    "/user={user}_password={password}&channel={channel}&stream=0.sdp?real_stream",
+    # variantes sin user/pass en la ruta (cred. en el usuario de la URL o sin auth)
+    "/channel={channel}_stream=0&onvif=0.sdp?real_stream",
+    "/channel={channel}_stream=1&onvif=0.sdp?real_stream",
+    "/channel={channel}_stream=0.sdp?real_stream",
+    "/channel={channel}_stream=1.sdp?real_stream",
+    "/channel={channel}_stream=0.sdp",
+    "/channel={channel}_stream=1.sdp",
 ]
 
 # Canales a sondear en cámaras XMEye/iCSee. La mayoría tienen 1, pero las
@@ -321,17 +338,24 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
     urls: List[str] = []
     for port in ports:
         for path in path_list:
-            if "{user}" in path or "{password}" in path:
-                # Rutas XMEye/iCSee: credenciales y canal dentro de la ruta.
-                # Cada canal puede ser un lente distinto (cámaras multi-lente).
-                # El canal mosaico (0) se sondea como candidato extra.
-                for u, pw in credential_sets:
-                    for channel in list(XMEYE_CHANNELS) + [XMEYE_MOSAIC_CHANNEL]:
+            if "{channel}" in path:
+                # Rutas XMEye/iCSee multi-lente: un canal (lente) por URL.
+                # El canal 0, si responde, suele ser la vista combinada (mosaico).
+                embedded = "{user}" in path or "{password}" in path
+                for channel in list(XMEYE_CHANNELS) + [XMEYE_MOSAIC_CHANNEL]:
+                    if embedded:
+                        for u, pw in credential_sets:
+                            try:
+                                filled = path.format(user=u, password=pw, channel=channel)
+                            except (KeyError, ValueError):
+                                continue
+                            urls.append(f"rtsp://{base_host}:{port}{filled}")
+                    else:
                         try:
-                            filled = path.format(user=u, password=pw, channel=channel)
+                            filled = path.format(channel=channel)
                         except (KeyError, ValueError):
                             continue
-                        urls.append(f"rtsp://{base_host}:{port}{filled}")
+                        urls.append(f"rtsp://{auth}{base_host}:{port}{filled}")
             else:
                 urls.append(f"rtsp://{auth}{base_host}:{port}{path}")
 
@@ -347,6 +371,54 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
                 valid.append(url)
     # Las que devuelven 200 primero
     return valid
+
+
+# --------------------------------------------------------------------------
+# 3b. Agrupar canales multi-lente (iCSee/XMEye)
+# --------------------------------------------------------------------------
+_CHANNEL_RE = re.compile(r"(?:^|[?&_/]|[A-Za-z])channel=(\d+)", re.I)
+_STREAM_RE = re.compile(r"(?:^|[?&_/]|[A-Za-z])stream=(\d+)", re.I)
+
+
+def _channel_param(url: str) -> Optional[str]:
+    m = _CHANNEL_RE.search(url)
+    return m.group(1) if m else None
+
+
+def _stream_param(url: str) -> Optional[str]:
+    m = _STREAM_RE.search(url)
+    return m.group(1) if m else None
+
+
+def group_rtsp_channels(urls: List[str]) -> Dict:
+    """Agrupa URLs RTSP iCSee/XMEye por canal y separa main/sub-stream.
+
+    Devuelve ``{'groups': [...], 'leftover': [...]}``.
+    Un grupo ``mosaic=True`` significa canal 0 (vista combinada de las lentes).
+    """
+    groups: Dict[str, Dict] = {}
+    leftover: List[str] = []
+    for url in urls:
+        channel = _channel_param(url)
+        if channel is None:
+            leftover.append(url)
+            continue
+        # Remove query/fragment so we can compare host/path without creds in logs.
+        key_src = url.split("://", 1)[-1].split("/", 1)[0]
+        key = f"{channel}@{key_src}" if key_src else channel
+        g = groups.setdefault(
+            key, {"channel": channel, "main": "", "sub": "", "mosaic": channel == "0"}
+        )
+        is_sub = (_stream_param(url) == "1")
+        if is_sub:
+            if not g["sub"]:
+                g["sub"] = url
+        elif not g["main"]:
+            g["main"] = url
+    ordered = sorted(groups.values(), key=lambda g: int(g["channel"] or 0))
+    for g in ordered:
+        g["label"] = "Mosaico" if g["mosaic"] else f"Lente {g['channel']}"
+    return {"groups": ordered, "leftover": leftover}
 
 
 # --------------------------------------------------------------------------
@@ -424,7 +496,31 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
                 host, "admin", "", ports=rtsp_ports, timeout=rtsp_timeout,
             )
 
+    report["channels"] = group_rtsp_channels(report.get("rtsp", []))
+
     port_open = {p: p in opened for p in [80, 8080, 8899, 34567, 554]}
+
+    # DVRIP/NetIP: la vía más fiable para las iCSee multi-lente que no exponen
+    # todas las lentes por RTSP. Enumeramos lentes y estado desde el protocolo
+    # propietario que usa la app.
+    if port_open.get(34567):
+        try:
+            dv = dvrip.probe(host, username, password, timeout=max(2.0, timeout * 2))
+            if dv.get("login_ok"):
+                report["dvrip"] = dv
+                report["hints"].append(
+                    f"DVRIP/NetIP autenticado: {dv.get('channels', 0)} lente(s) "
+                    "detectada(s) por el protocolo de la app iCSee. Usa el botón "
+                    "'Añadir los N' para darlas de alta como cámaras independientes."
+                )
+            elif dv.get("hints"):
+                report["hints"].append(
+                    "El puerto DVRIP 34567 está abierto pero la autenticación no "
+                    "es válida con esas credenciales. Prueba la cuenta de la app "
+                    "o admin con su contraseña."
+                )
+        except Exception as exc:
+            report["hints"].append(f"Error sondeando DVRIP/NetIP: {type(exc).__name__}: {exc}")
 
     if report["rtsp"]:
         report["hints"].append(
@@ -462,8 +558,21 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
     if port_open.get(34567):
         report["hints"].append(
             "Puerto 34567 abierto: protocolo propietario DVRIP/NetIP de iCSee "
-            "(así conecta la app). No se usa para vídeo en Vigía, pero confirma "
-            "que es una cámara iCSee/XMEye."
+            "(así conecta la app). En modelos 3-en-1 algunos firmware sólo "
+            "exponen un lente por RTSP y el resto sólo por DVRIP/NetIP; en ese "
+            "caso la app iCSee o un bridge como go2rtc pueden exponerlos."
+        )
+
+    lens_channels = [
+        g for g in report.get("channels", {}).get("groups", []) if not g.get("mosaic")
+    ]
+    if len(lens_channels) and len(lens_channels) < 3 and port_open.get(34567):
+        report["hints"].append(
+            f"Se detectaron {len(lens_channels)} canal(es) RTSP de una cámara "
+            "multi-lente. Si faltan lentes, es probable que este firmware no "
+            "exponga todas por RTSP; prueba a revisar en la app iCSee/ajustes "
+            "que cada lente tenga RTSP habilitado, o usa el canal mosaico "
+            "(channel=0) para ver las lentes combinadas."
         )
     if not report["rtsp"] and not port_open.get(554) and not port_open.get(80):
         report["hints"].append(

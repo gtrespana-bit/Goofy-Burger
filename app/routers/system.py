@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import platform
+import re
 import sys
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 
-from ..config import config
-from ..services import discovery, onvif_client
+from ..config import DATA_DIR, config
+from ..services import discovery, dvrip, onvif_client, pusher
 from ..services.capture import list_usb_devices
 from ..services.manager import manager
 from ..services.recorder import ffmpeg_path
@@ -22,7 +26,61 @@ from .. import events_store
 router = APIRouter(prefix="/system", tags=["system"])
 
 START_TIME = time.time()
-VERSION = "0.1.0"
+VERSION = "1.0.1"
+PREMIUM_FEATURES = [
+    "Grabación continua, por movimiento, inteligente y por horario",
+    "Calidad de grabación, resolución, fps, bitrate y CRF por cámara",
+    "Detección con zonas, máscaras de privacidad y anti-falsos positivos",
+    "IA opcional (personas, vehículos, mascotas) con confianza y clases",
+    "Detección de cámara tapada / manipulación",
+    "Seguimiento de objetos y cruce de líneas virtuales con IA",
+    "Informes semanales por cámara, día y tipo de evento",
+    "Notificaciones Telegram, ntfy, webhook, Discord, Pushover y email",
+    "Push real al móvil (Web Push) y alarma sonora en pantalla",
+    "Control PTZ y presets ONVIF",
+    "Soporte nativo DVRIP/NetIP (iCSee multi-lente por 34567)",
+    "Analítica de eventos y gestión de almacenamiento",
+    "Exportación/importación de configuración y autenticación Basic",
+    "Ventana propia de escritorio (Windows) y acceso desde la LAN",
+]
+
+
+def _safe_log_lines(path: Path, lines: int = 250) -> List[str]:
+    """Lee las últimas líneas de un log, con sanitizado de credenciales."""
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return [f"<no se pudo leer {path.name}: {exc}>"]
+    text = data[-max(1, int(lines)) * 6000:] if data else ""
+    out = text.splitlines()[-max(1, int(lines)):]
+    sanitized = []
+    for line in out:
+        line = re.sub(r"(rtsp://)[^/@\s]+@", r"\1***:***@", line)
+        line = re.sub(r"(user=)[^&\s/]+", r"\1***", line)
+        line = re.sub(r"((?:password|passwd)=)[^&\s/]+", r"\1***", line)
+        line = re.sub(r"(bearer\s+)[^\s]+", r"\1***", line, flags=re.I)
+        line = re.sub(r"(x-api-key[:\s]+)[^\s]+", r"\1***", line, flags=re.I)
+        sanitized.append(line)
+    return sanitized
+
+
+def _log_files() -> List[dict]:
+    log_dir = DATA_DIR / "logs"
+    out: List[dict] = []
+    try:
+        for p in sorted(log_dir.glob("*.log*")):
+            try:
+                st = p.stat()
+                out.append({
+                    "name": p.name,
+                    "size": int(st.st_size),
+                    "modified": int(st.st_mtime),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
 
 
 def _ultralytics_available() -> bool:
@@ -39,6 +97,8 @@ def info():
     exe = ffmpeg_path()
     return {
         "version": VERSION,
+        "edition": config.data.get("general", {}).get("edition", "Pro"),
+        "features": PREMIUM_FEATURES,
         "python": sys.version.split()[0],
         "platform": f"{platform.system()} {platform.release()}",
         "hostname": platform.node(),
@@ -47,6 +107,8 @@ def info():
         "opencv": cv2.__version__,
         "onvif_available": onvif_client.ONVIF_AVAILABLE,
         "onvif_hint": onvif_client.ONVIF_IMPORT_ERROR,
+        "dvrip_available": dvrip.available(),
+        "dvrip_hint": dvrip.DVRIP_ERROR,
         "ai_available": _ultralytics_available(),
         "auth_enabled": bool(config.data.get("general", {}).get("auth_enabled")),
         "away": bool(config.data.get("general", {}).get("away")),
@@ -54,6 +116,58 @@ def info():
         "cameras": len(config.cameras()),
         "events_unacknowledged": events_store.count_unacknowledged(),
         "local_ip": discovery.local_ip(),
+    }
+
+
+@router.get("/remote")
+def remote_info():
+    """Información para configurar acceso remoto (Tailscale/DDNS/HTTPS)."""
+    import subprocess
+
+    def _cmd(args):
+        try:
+            return subprocess.run(args, capture_output=True, text=True, timeout=3).stdout.strip()
+        except Exception:
+            return ""
+
+    tailscale_ip = _cmd(["tailscale", "ip", "-4"]) or _cmd(["tailscale", "ip"])
+    wireguard_ip = _cmd(["wg", "show", "interfaces"])
+    remote = config.data.get("general", {}).get("remote", {}) or {}
+    return {
+        "local_ip": discovery.local_ip(),
+        "port": config.data.get("server", {}).get("port", 8000),
+        "tailscale": tailscale_ip or None,
+        "wireguard": wireguard_ip or None,
+        "https_enabled": bool(remote.get("https_enabled")),
+        "certfile": remote.get("certfile", ""),
+        "ddns": remote.get("ddns", ""),
+        "guide": [
+            "Opción 1 (recomendada): instala Tailscale en este equipo y en tu móvil; con la IP 100.x.x.x accedes seguro sin abrir puertos.",
+            "Opción 2 (LAN): usa la IP local y el puerto del programa desde un dispositivo de la misma red.",
+            "Opción 3 (internet): haz DDNS + reenvío del puerto + HTTPS con certificado autogenerado o de Let's Encrypt.",
+        ],
+    }
+
+
+@router.get("/dashboard")
+def dashboard():
+    """Resumen premium para el panel: cámaras, estado, eventos y almacenamiento."""
+    cams = manager.cameras_with_status()
+    events = events_store.all_events()
+    day = time.strftime("%Y-%m-%d")
+    today_events = [e for e in events if (e.get("ts") or "").startswith(day)]
+    by_label: dict = {}
+    for e in today_events:
+        by_label[e.get("label", "motion")] = by_label.get(e.get("label", "motion"), 0) + 1
+    return {
+        "cameras": len(cams),
+        "online": sum(1 for c in cams if c.get("health", {}).get("state") == "running"),
+        "recording": sum(1 for c in cams if c.get("health", {}).get("recording")),
+        "events_today": len(today_events),
+        "unacknowledged": events_store.count_unacknowledged(),
+        "by_label": by_label,
+        "storage": storage_stats(),
+        "cameras_with_status": cams,
     }
 
 
@@ -128,26 +242,24 @@ def diagnose(req: DiscoverRequest):
             rtsp_timeout=max(1.2, req.timeout / 3),
         )
         # Si ONVIF está abierto, enumera perfiles (multi-lente) con su stream.
-        onvif_port_open = any(
-            p["port"] == 8899 and p["open"] for p in report.get("ports", [])
-        )
-        if onvif_port_open:
-            if onvif_client.ONVIF_AVAILABLE:
-                report["onvif_profiles"] = _probe_onvif_profiles(
-                    req.target, req.username, req.password
+        # No limitamos a 8899: probamos 80/8080/8000/8899 automáticamente.
+        if onvif_client.ONVIF_AVAILABLE and (
+            any(p["open"] for p in report.get("ports", [])
+                if p["port"] in (80, 8080, 8000, 8899))
+        ):
+            onvif_info = _probe_onvif_profiles(
+                req.target, req.username, req.password
+            )
+            if onvif_info:
+                report["onvif_profiles"] = onvif_info
+                report["channels"] = _annotate_channels_onvif(
+                    report.get("channels", {}), onvif_info
                 )
-                if not report["onvif_profiles"]:
-                    report["hints"].append(
-                        "El puerto ONVIF (8899) está abierto pero no se pudieron "
-                        "leer perfiles con esas credenciales. Prueba con 'admin' "
-                        "y la contraseña de admin de la cámara (no la de la app)."
-                    )
             else:
                 report["hints"].append(
-                    "El puerto ONVIF (8899) está abierto: la cámara habla ONVIF "
-                    "(detectar todas las lentes y mover/PTZ). Instala la "
-                    "dependencia con 'pip install onvif-zeep' y vuelve a "
-                    "diagnosticar."
+                    "Hay un puerto ONVIF abierto pero no se pudieron leer "
+                    "perfiles con esas credenciales. Prueba con 'admin' y la "
+                    "contraseña de admin de la cámara (no la de la app)."
                 )
         return report
     except HTTPException:
@@ -156,39 +268,123 @@ def diagnose(req: DiscoverRequest):
         raise HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
-def _probe_onvif_profiles(host: str, username: str, password: str) -> list:
-    """Enumera perfiles ONVIF en el puerto 8899 probando varias credenciales.
+def _probe_onvif_profiles(host: str, username: str, password: str) -> dict:
+    """Enumera perfiles ONVIF probando varios puertos y credenciales.
 
-    Devuelve lista de perfiles con su URL RTSP (uno por lente en multi-lente).
+    Las cámaras iCSee/XMEye suelen poner ONVIF en 8899, pero otras en 80,
+    8080 o 8000. Devuelve el puerto que funcione y un perfil por lente.
     """
     import logging
 
     log = logging.getLogger("vigia")
+    ports = [8899, 80, 8080, 8000]
     candidates = [(username or "", password or "")]
     if (username or "").lower() != "admin":
         candidates += [("admin", password or ""), ("admin", "")]
     if not candidates[0][0]:
         candidates = [("admin", ""), ("admin", password or "")]
 
-    for u, pw in candidates:
-        try:
-            device = onvif_client.OnvifDevice(host, 8899, u, pw)
-            device.connect()
-            profiles = device.profiles_with_streams()
-            if profiles:
-                return {
-                    "username": u,
-                    "password": bool(pw),
-                    "profiles": profiles,
-                }
-        except Exception as exc:
-            log.debug("ONVIF 8899 con %s: %s", u or "(vacío)", exc)
+    for port in ports:
+        for u, pw in candidates:
+            try:
+                device = onvif_client.OnvifDevice(host, port, u, pw)
+                device.connect()
+                profiles = device.profiles_with_streams()
+                has_ptz = device.has_ptz() or any(p.get("has_ptz") for p in profiles)
+                if profiles:
+                    return {
+                        "port": port,
+                        "username": u,
+                        "password": bool(pw),
+                        "profiles": profiles,
+                        "has_ptz": has_ptz,
+                    }
+                if has_ptz:
+                    # El dispositivo habla ONVIF/PTZ aunque no liste perfiles.
+                    return {
+                        "port": port,
+                        "username": u,
+                        "password": bool(pw),
+                        "profiles": [],
+                        "has_ptz": True,
+                    }
+            except Exception as exc:
+                log.debug("ONVIF %s:%s con %s: %s", host, port, u or "(vacío)", exc)
     return {}
+
+
+def _annotate_channels_onvif(channels: dict, onvif_info: dict) -> dict:
+    """Cruza los canales RTSP detectados con los perfiles ONVIF.
+
+    Añade a cada canal el token del perfil que le corresponde (y el perfil PTZ
+    si la cámara tiene una lente giratoria). Así el asistente puede crear las
+    cámaras correctas y poner PTZ sólo donde corresponde.
+    """
+    import re as _re
+
+    channels = dict(channels or {})
+    groups = list(channels.get("groups") or [])
+    profiles = list(onvif_info.get("profiles") or [])
+
+    def _profile_channel(profile: dict) -> str:
+        u = profile.get("rtsp") or ""
+        m = _re.search(r"(?:^|[?&_/])channel=(\d+)", u, _re.I)
+        return m.group(1) if m else ""
+
+    for g in groups:
+        ch = str(g.get("channel", ""))
+        matched = None
+        for profile in profiles:
+            if _profile_channel(profile) == ch:
+                matched = profile
+                break
+        if matched is None and len(profiles) == len([x for x in groups if not x.get("mosaic")]):
+            # Orden estable: los perfiles de estas cámaras suelen ir en orden
+            # de lente. Usamos la posición del canal dentro de los no-mosaico.
+            idx = [x for x in groups if not x.get("mosaic")].index(g)
+            if 0 <= idx < len(profiles):
+                matched = profiles[idx]
+        if matched is not None:
+            g["profile_token"] = matched.get("token", "")
+            g["has_ptz"] = bool(matched.get("has_ptz"))
+            if not g.get("main") and matched.get("rtsp"):
+                g["main"] = matched["rtsp"]
+        elif onvif_info.get("has_ptz"):
+            g["has_ptz"] = True
+
+    # La lente giratoria normalmente es la primera con has_ptz; la dejamos
+    # indicada en el grupo para que la UI la marque.
+    ptz_profile = None
+    for profile in profiles:
+        if profile.get("has_ptz"):
+            ptz_profile = profile
+            break
+    if ptz_profile is None and profiles:
+        ptz_profile = profiles[0]
+
+    channels["groups"] = groups
+    channels["onvif_port"] = onvif_info.get("port")
+    channels["username"] = onvif_info.get("username", "")
+    channels["password_present"] = bool(onvif_info.get("password"))
+    channels["ptz_profile_token"] = ptz_profile.get("token", "") if ptz_profile else ""
+    channels["has_ptz"] = bool(onvif_info.get("has_ptz") or ptz_profile)
+    return channels
 
 
 @router.get("/usb")
 def usb_devices():
     return {"devices": list_usb_devices()}
+
+
+@router.post("/dvrip/discover")
+def dvrip_discover(timeout: float = Query(2.5, ge=1, le=15)):
+    """Descubre cámaras iCSee/XMEye por DVRIP broadcast (UDP 34569)."""
+    try:
+        devices = dvrip.discover(timeout=max(1.0, float(timeout)))
+        return {"mode": "dvrip", "devices": devices,
+                "available": dvrip.available()}
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
 @router.post("/away")
@@ -211,4 +407,102 @@ def health():
         "ok": True,
         "uptime": int(time.time() - START_TIME),
         "cameras": statuses,
+    }
+
+
+@router.get("/logs")
+def logs():
+    log_dir = DATA_DIR / "logs"
+    return {"dir": str(log_dir), "files": _log_files()}
+
+
+@router.get("/logs/tail")
+def logs_tail(file: str = Query("vigia.log"), lines: int = Query(200, ge=1, le=1200)):
+    if not file or Path(file).name != file:
+        raise HTTPException(400, "Nombre de fichero inválido")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", file):
+        raise HTTPException(400, "Nombre de fichero inválido")
+    path = DATA_DIR / "logs" / file
+    if not path.exists():
+        raise HTTPException(404, "No existe ese log")
+    return {"file": file, "path": str(path), "lines": _safe_log_lines(path, lines)}
+
+
+@router.get("/diagnostics")
+def diagnostics():
+    """Todo lo necesario para diagnosticar instalación y funcionamiento."""
+    data_dir_ok = False
+    try:
+        (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        probe = DATA_DIR / "logs" / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        data_dir_ok = True
+    except Exception:
+        pass
+
+    cam_health = []
+    errors = []
+    for cam in config.cameras():
+        st = manager.status(cam["id"])
+        cid = cam["id"]
+        cam_health.append({
+            "id": cid,
+            "name": cam.get("name"),
+            "source_type": cam.get("source_type"),
+            "enabled": cam.get("enabled", True),
+            "state": st.get("state"),
+            "last_error": st.get("last_error", ""),
+            "reconnects": st.get("reconnects", 0),
+            "fps": st.get("fps", 0.0),
+            "frame_age": st.get("frame_age", 0.0),
+        })
+        if st.get("last_error"):
+            errors.append({
+                "camera_id": cid,
+                "name": cam.get("name"),
+                "source": "worker",
+                "message": st.get("last_error", ""),
+            })
+    try:
+        log_dir = DATA_DIR / "logs"
+        main_log = log_dir / "vigia.log"
+        boot_log = log_dir / "startup_error.log"
+        log_tail = _safe_log_lines(main_log, 120) if main_log.exists() else []
+        boot_tail = _safe_log_lines(boot_log, 40) if boot_log.exists() else []
+    except Exception as exc:
+        log_tail = [f"<no se pudo leer el log: {exc}>"]
+        boot_tail = []
+
+    try:
+        push_ok = pusher.available()
+        push_error = pusher.PUSH_ERROR
+    except Exception as exc:
+        push_ok = False
+        push_error = str(exc)
+
+    return {
+        "ok": True,
+        "version": VERSION,
+        "python": sys.version.split()[0],
+        "platform": f"{platform.system()} {platform.release()}",
+        "hostname": platform.node(),
+        "ffmpeg": ffmpeg_path() or None,
+        "opencv": cv2.__version__,
+        "onvif_available": onvif_client.ONVIF_AVAILABLE,
+        "onvif_hint": onvif_client.ONVIF_IMPORT_ERROR,
+        "dvrip_available": dvrip.available(),
+        "dvrip_hint": dvrip.DVRIP_ERROR,
+        "pywebpush_available": push_ok,
+        "pywebpush_hint": push_error,
+        "ai_available": _ultralytics_available(),
+        "data_dir": str(DATA_DIR),
+        "data_dir_writable": data_dir_ok,
+        "cameras": cam_health,
+        "errors": errors,
+        "logs_dir": str(DATA_DIR / "logs"),
+        "log_files": _log_files(),
+        "log_tail": log_tail,
+        "startup_error_tail": boot_tail,
+        "storage": storage_stats(),
     }

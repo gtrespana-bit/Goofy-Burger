@@ -8,9 +8,10 @@ from typing import Any, Dict
 
 import cv2
 from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..config import config
+from ..config import camera_source_key, config
 from ..models import build_camera, redact
 from ..services import onvif_client
 from ..services.capture import probe_snapshot, usb_device_names_windows, list_usb_devices
@@ -26,6 +27,16 @@ def _defaults() -> Dict[str, Any]:
     return {"detection": data.get("detection", {}), "recording": data.get("recording", {})}
 
 
+def _find_duplicate(cam: Dict[str, Any]):
+    key = camera_source_key(cam)
+    for existing in config.cameras():
+        if existing.get("id") == cam.get("id"):
+            continue
+        if camera_source_key(existing) == key:
+            return existing
+    return None
+
+
 @router.get("")
 def list_cameras():
     return {"cameras": manager.cameras_with_status()}
@@ -36,10 +47,46 @@ def create_camera(payload: Dict[str, Any] = Body(...)):
     cam = build_camera(payload, _defaults())
     if not cam["name"]:
         raise HTTPException(400, "Falta el nombre")
+    # No duplicar el mismo dispositivo-canal aunque el usuario pulse "Añadir"
+    # varias veces. Si ya existe, la actualizamos: así una cámara que se había
+    # añadido con credenciales incorrectas se corrige al reintentar el asistente.
+    dup = _find_duplicate(cam)
+    if dup:
+        updated_cam = config.update_camera(dup["id"], dict(payload))
+        if updated_cam:
+            manager.sync(config.cameras())
+            updated_cam["health"] = manager.status(dup["id"])
+            return JSONResponse(
+                {"camera": updated_cam, "duplicate": True, "updated": True},
+                status_code=200,
+            )
     config.add_camera(cam)
     if cam.get("enabled", True):
         manager.start(cam)
     return {"camera": cam}
+
+
+@router.post("/dedupe")
+def dedupe_cameras():
+    """Quita las cámaras duplicadas del mismo dispositivo-canal.
+
+    Cuando se añade dos veces una iCSee multi-lente, al arrancar aparecen
+    decenas de cámaras muertas (2 mosaicos + N x cada lente). Esta operación
+    conserva la copia mejor configurada de cada grupo y detiene/elimina el resto.
+    """
+    removed = config.dedupe_cameras()
+    for cam in removed:
+        manager.stop(cam.get("id", ""))
+    if removed:
+        manager.sync(config.cameras())
+    return {
+        "removed": [
+            {"id": c.get("id"), "name": c.get("name"), "source_type": c.get("source_type")}
+            for c in removed
+        ],
+        "count": len(removed),
+        "remaining": len(config.cameras()),
+    }
 
 
 @router.get("/{camera_id}")

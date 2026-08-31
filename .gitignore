@@ -1,5 +1,6 @@
 # Datos generados en tiempo de ejecución (nunca al repo)
 data/
+devdata/
 .venv/
 venv/
 __pycache__/

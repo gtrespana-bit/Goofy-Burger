@@ -12,7 +12,7 @@
 
 import os
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 # `SPECPATH` lo define PyInstaller (ruta de la carpeta donde está el .spec),
 # porque dentro de un spec `__file__` no existe.
@@ -22,8 +22,13 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 # que es una cadena, así que hay que declararlos explícitamente).
 hiddenimports = []
 hiddenimports += collect_submodules("app")
+hiddenimports += ["app", "app.main", "app.main:app"]
+# Ventana propia de escritorio (pywebview), si está instalada.
+hiddenimports += collect_submodules("webview")
 hiddenimports += collect_submodules("onvif")
 hiddenimports += collect_submodules("zeep")
+hiddenimports += collect_submodules("dvrip")
+hiddenimports += ["imageio_ffmpeg", "imageio_ffmpeg.binaries", "imageio_ffmpeg._utils"]
 # zeep/lxml a veces necesitan estos ocultos en entornos Windows
 hiddenimports += [
     "lxml", "lxml.etree", "lxml._elementpath", "lxml.objectify",
@@ -39,7 +44,7 @@ a = Analysis(
         (os.path.join(ROOT, "web"), "web"),
         (os.path.join(ROOT, "samples"), "samples"),
         (os.path.join(ROOT, "build", "icon.png"), "."),
-    ],
+    ] + collect_data_files("imageio_ffmpeg") + collect_data_files("webview"),
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},

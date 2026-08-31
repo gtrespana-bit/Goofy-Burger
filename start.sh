@@ -14,12 +14,12 @@ fi
 
 python - <<'PY' || true
 import importlib
-missing = [m for m in ("fastapi", "uvicorn", "cv2", "requests", "onvif", "imageio_ffmpeg")
+missing = [m for m in ("fastapi", "uvicorn", "cv2", "requests", "onvif", "imageio_ffmpeg", "dvrip", "pywebpush")
            if not importlib.util.find_spec(m)]
 print("FALTAN:" + ",".join(missing) if missing else "deps-ok")
 PY
 
-if ! python -c "import fastapi, uvicorn, cv2, requests, onvif, imageio_ffmpeg" 2>/dev/null; then
+if ! python -c "import fastapi, uvicorn, cv2, requests, onvif, imageio_ffmpeg, dvrip, pywebpush" 2>/dev/null; then
   echo "Instalando dependencias (incluye ONVIF y ffmpeg)…"
   pip install --upgrade pip
   pip install -r requirements.txt

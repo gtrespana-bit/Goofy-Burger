@@ -115,6 +115,7 @@ class MotionDetector:
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         zones = self._scale_zones(cfg.get("zones") or [], sw, sh)
+        privacy = self._scale_zones(cfg.get("privacy_mask") or [], sw, sh)
         zone_mode = cfg.get("zone_mode", "include")
 
         boxes: List[List[int]] = []
@@ -127,6 +128,9 @@ class MotionDetector:
             x, y, cw, ch = cv2.boundingRect(cnt)
             cx, cy = x + cw / 2.0, y + ch / 2.0
             motion_pixels += area
+            # Las máscaras de privacidad siempre se ignoran (ventanas, puestas...)
+            if privacy and self._point_in_zones(cx, cy, privacy):
+                continue
             if zones:
                 inside = self._point_in_zones(cx, cy, zones)
                 if zone_mode == "include" and not inside:
@@ -159,8 +163,11 @@ class MotionDetector:
 
         result = DetectionResult(score=score, contours=len(contours), fps=round(self._fps, 2))
 
-        # Cambio global de luz (IR día/noche, nubes, faros): se descarta
-        if ratio > 0.60:
+        # Cambio global de luz (IR día/noche, nubes, faros): se descarta por
+        # defecto si está activado `ignore_light_change`. Con un 85% o más de
+        # la imagen cambiando suele ser un taponazo o fallo del sensor.
+        ignore_light = cfg.get("ignore_light_change", True)
+        if ratio > 0.85 or (ratio > 0.60 and ignore_light):
             result.reason = "light_change"
             return result
 
@@ -227,10 +234,13 @@ class AIDetector:
         14: "bird", 15: "cat", 16: "dog", 17: "horse", 18: "sheep", 19: "cow",
     }
 
-    def __init__(self, model_name: str = "yolov8n.pt", conf: float = 0.45, labels=None):
+    def __init__(self, model_name: str = "yolov8n.pt", conf: float = 0.45, labels=None,
+                 imgsz: int = 640, every_n: int = 3):
         self.model_name = model_name
         self.conf = conf
         self.labels = set(labels or ["person", "car", "truck", "dog", "cat"])
+        self.imgsz = max(160, int(imgsz or 640))
+        self.every_n = max(1, int(every_n or 3))
         self.available = False
         self._model = None
         self._lock = threading.Lock()
@@ -253,28 +263,29 @@ class AIDetector:
             self.available = False
             return False
 
-    def configure(self, model_name: str, conf: float, labels) -> None:
+    def configure(self, model_name: str, conf: float, labels, imgsz: int = 640) -> None:
         reload = model_name != self.model_name
         self.model_name = model_name
         self.conf = float(conf)
         self.labels = set(labels or self.labels)
+        self.imgsz = max(160, int(imgsz or 640))
         if reload:
             self._load()
 
     def process(self, frame: np.ndarray, every_n: int = 3, counter: int = 0):
-        """Devuelve (hay_objetivo, boxes, labels). Se ejecuta cada `every_n` frames."""
+        """Devuelve (hay_objetivo, boxes, labels, confidences)."""
         if not self.available or self._model is None:
-            return False, [], []
+            return False, [], [], []
         if every_n > 1 and (counter % every_n) != 0:
-            return False, [], []
+            return False, [], [], []
         try:
             with self._lock:
                 results = self._model.predict(
-                    frame, conf=self.conf, verbose=False, imgsz=640
+                    frame, conf=self.conf, verbose=False, imgsz=self.imgsz
                 )
         except Exception:
-            return False, [], []
-        boxes, labels = [], []
+            return False, [], [], []
+        boxes, labels, confs = [], [], []
         for res in results:
             for box in getattr(res, "boxes", []):
                 cls_id = int(box.cls[0]) if box.cls is not None else -1
@@ -288,4 +299,8 @@ class AIDetector:
                 x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
                 boxes.append([x1, y1, x2 - x1, y2 - y1])
                 labels.append(label)
-        return bool(boxes), boxes, labels
+                try:
+                    confs.append(round(float(box.conf[0]), 3))
+                except Exception:
+                    confs.append(0.0)
+        return bool(boxes), boxes, labels, confs

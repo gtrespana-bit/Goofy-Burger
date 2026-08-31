@@ -10,7 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
-SOURCE_TYPES = ("rtsp", "usb", "file", "demo")
+SOURCE_TYPES = ("rtsp", "dvrip", "usb", "file", "demo")
 
 
 def new_id(prefix: str = "") -> str:
@@ -23,6 +23,37 @@ def utc_now() -> datetime:
 
 def iso(dt: datetime) -> str:
     return dt.replace(microsecond=0).isoformat() + "Z"
+
+
+# --------------------------------------------------------------------------
+# Horarios (detección y grabación)
+# --------------------------------------------------------------------------
+def default_schedule() -> List[Dict[str, Any]]:
+    """Vacío = siempre activo. Cada entrada: {'days':[0..6], 'start':'HH:MM', 'end':'HH:MM'}."""
+    return []
+
+
+def is_schedule_active(schedule: Optional[list], now: Optional[Any] = None) -> bool:
+    """Comprueba si la hora actual está dentro de alguna franja del horario."""
+    if not schedule:
+        return True
+    try:
+        now = now or datetime.now()
+        dow = now.weekday()                       # lunes=0 ... domingo=6
+        hm = now.strftime("%H:%M")
+    except Exception:
+        return True
+    for entry in schedule:
+        if not isinstance(entry, dict):
+            continue
+        days = entry.get("days") or []
+        if days and dow not in [int(d) for d in days if str(d).isdigit()]:
+            continue
+        start = str(entry.get("start") or "00:00")[:5]
+        end = str(entry.get("end") or "23:59")[:5]
+        if start <= hm <= end:
+            return True
+    return False
 
 
 # --------------------------------------------------------------------------
@@ -99,6 +130,46 @@ class OnvifConfig(BaseModel):
     use_onvif_stream: bool = True
 
 
+class DvripConfig(BaseModel):
+    """Soporte nativo NetIP/DVRIP (puerto 34567) para iCSee/XMEye."""
+    enabled: bool = False
+    host: str = ""
+    port: int = 34567
+    channel: int = 0                       # canal 0-based del protocolo
+    stream: str = "main"                   # main | sub
+    codec: str = "auto"                    # auto | h264 | h265
+    title: str = ""
+    ptz_enabled: bool = False
+
+
+class OverlayConfig(BaseModel):
+    """Marca de agua / información en la vista en directo y en instantáneas."""
+    enabled: bool = False
+    timestamp: bool = True
+    camera_name: bool = True
+    location: bool = False
+    position: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-left"
+    font_scale: float = 0.7
+
+
+class LineConfig(BaseModel):
+    id: str = ""
+    name: str = ""
+    enabled: bool = True
+    direction: Literal["both", "in", "out"] = "both"
+    p1: List[float] = Field(default_factory=lambda: [0.5, 0.0])
+    p2: List[float] = Field(default_factory=lambda: [0.5, 1.0])
+
+
+class AnalyticsConfig(BaseModel):
+    enabled: bool = True
+    tracking_enabled: bool = True
+    line_crossing_enabled: bool = True
+    lines: List[LineConfig] = Field(default_factory=list)
+    max_track_age: int = 12
+    line_cross_cooldown: int = 4
+
+
 class DetectionConfig(BaseModel):
     enabled: bool = True
     sensitivity: int = 55
@@ -108,39 +179,69 @@ class DetectionConfig(BaseModel):
     cooldown_seconds: int = 20
     zones: List[List[List[float]]] = Field(default_factory=list)
     zone_mode: Literal["include", "exclude"] = "include"
+    privacy_mask: List[List[List[float]]] = Field(default_factory=list)
+    ignore_light_change: bool = True
+    max_events_per_minute: int = 0          # 0 = sin límite
+    tamper_enabled: bool = False
+    tamper_sensitivity: int = 40
+    schedule: List[Dict[str, Any]] = Field(default_factory=default_schedule)
     ai_enabled: bool = False
     ai_labels: List[str] = Field(default_factory=lambda: ["person", "car", "dog", "cat"])
     ai_confidence: float = 0.45
     ai_model: str = "yolov8n.pt"
+    ai_every_n: int = 3
+    ai_imgsz: int = 640
+    analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
 
 
 class RecordingConfig(BaseModel):
-    mode: Literal["continuous", "motion", "off"] = "continuous"
+    mode: Literal["continuous", "motion", "smart", "scheduled", "off"] = "continuous"
+    quality: Literal["high", "medium", "low", "custom"] = "medium"
+    crf: int = 23
+    preset: Literal["ultrafast", "superfast", "veryfast", "faster", "fast", "medium"] = "veryfast"
+    bitrate: str = ""                       # ej. "2500k" (vacío = CRF)
+    width: int = 0                          # 0 = original
+    height: int = 0
+    fps: int = 0                            # 0 = original
     segment_seconds: int = 300
     pre_seconds: int = 5
     post_seconds: int = 10
+    max_event_seconds: int = 600
     codec: Literal["copy", "h264"] = "copy"
     audio: bool = False
+    snapshot_on_motion: bool = True
+    retention_days: int = 0                 # 0 = usar retención global
+    schedule: List[Dict[str, Any]] = Field(default_factory=default_schedule)
 
 
 class AlertConfig(BaseModel):
     enabled: bool = True
     channels: List[str] = Field(default_factory=list)  # vacío = todos los activos
     only_when_away: bool = False
+    labels: List[str] = Field(default_factory=list)    # vacío = todas las etiquetas
+    max_per_hour: int = 0                               # 0 = sin límite
+    alarm_enabled: bool = True
 
 
 class CameraBase(BaseModel):
     name: str
     enabled: bool = True
-    source_type: Literal["rtsp", "usb", "file", "demo"] = "rtsp"
-    url: str = ""             # rtsp://... | ruta de fichero | (demo: ignorado)
+    source_type: Literal["rtsp", "dvrip", "usb", "file", "demo"] = "rtsp"
+    url: str = ""             # rtsp://... | dvrip://... | ruta de fichero | (demo: ignorado)
     substream_url: str = ""   # opcional: flujo secundario para detección/live
     username: str = ""
     password: str = ""
     device_index: int = 0     # usb
     device_name: str = ""     # usb en Windows (dshow) / macOS (avfoundation)
     group: str = ""           # etiqueta libre: "Entrada", "Garaje"...
+    location: str = ""        # lugar físico
+    tags: List[str] = Field(default_factory=list)
+    notes: str = ""
+    color: str = ""           # color de la tarjeta en el panel
+    order: int = 0
+    overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     onvif: OnvifConfig = Field(default_factory=OnvifConfig)
+    dvrip: DvripConfig = Field(default_factory=DvripConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
@@ -163,7 +264,14 @@ class CameraUpdate(BaseModel):
     device_index: Optional[int] = None
     device_name: Optional[str] = None
     group: Optional[str] = None
+    location: Optional[str] = None
+    tags: Optional[List[str]] = None
+    notes: Optional[str] = None
+    color: Optional[str] = None
+    order: Optional[int] = None
+    overlay: Optional[Dict[str, Any]] = None
     onvif: Optional[Dict[str, Any]] = None
+    dvrip: Optional[Dict[str, Any]] = None
     detection: Optional[Dict[str, Any]] = None
     recording: Optional[Dict[str, Any]] = None
     alerts: Optional[Dict[str, Any]] = None
@@ -200,7 +308,14 @@ def build_camera(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str,
         "device_index": int(payload.get("device_index", 0) or 0),
         "device_name": payload.get("device_name", ""),
         "group": payload.get("group", ""),
+        "location": payload.get("location", ""),
+        "tags": list(payload.get("tags") or []),
+        "notes": payload.get("notes", ""),
+        "color": payload.get("color", ""),
+        "order": int(payload.get("order", 0) or 0),
+        "overlay": {**OverlayConfig().model_dump(), **(payload.get("overlay") or {})},
         "onvif": {**OnvifConfig().model_dump(), **(payload.get("onvif") or {})},
+        "dvrip": {**DvripConfig().model_dump(), **(payload.get("dvrip") or {})},
         "detection": {**DetectionConfig().model_dump(), **det, **(payload.get("detection") or {})},
         "recording": {**RecordingConfig().model_dump(), **rec, **(payload.get("recording") or {})},
         "alerts": {**AlertConfig().model_dump(), **(payload.get("alerts") or {})},
@@ -224,7 +339,7 @@ class Event(BaseModel):
     camera_id: str
     camera_name: str = ""
     ts: str
-    label: str = "motion"        # motion | person | car | ...
+    label: str = "motion"        # motion | person | car | ... | line_cross
     score: float = 0.0
     boxes: List[List[int]] = Field(default_factory=list)
     snapshot: str = ""           # ruta relativa
@@ -232,6 +347,7 @@ class Event(BaseModel):
     notified: List[str] = Field(default_factory=list)
     acknowledged: bool = False
     notes: str = ""
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

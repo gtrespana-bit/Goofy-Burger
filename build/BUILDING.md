@@ -8,6 +8,7 @@ empaquetar en un **.exe autocontenido** y en un **instalador de Windows**.
 
 - Python + todas las dependencias (FastAPI, OpenCV…)
 - **ONVIF (`onvif-zeep`)** para detectar todas las lentes y controlar el PTZ
+- **DVRIP (`dvrip`)** para enumerar/abrir lentes iCSee/XMEye por el puerto 34567
 - **ffmpeg (`imageio-ffmpeg`)** para grabar sin instalar nada más
 - La interfaz web y el icono
 
@@ -39,8 +40,21 @@ python -m venv .venv
 pip install -r requirements.txt pyinstaller
 ```
 
-Descarga e instala [Inno Setup 6](https://jrsoftware.org/isinfo.php) y deja
-`ISCC.exe` accesible (añádelo al PATH).
+Descarga e instala [Inno Setup 6](https://jrsoftware.org/isinfo.php). El
+script `build_windows.bat` busca `ISCC.exe` en el PATH y en las rutas
+habituales de Inno Setup 6 y 7, así que no hace falta añadirlo manualmente al
+PATH. El instalador usa `x64compatible` si el compilador es 6.3+ (o 7) y
+`x64` con versiones anteriores, así que compila en cualquiera de ellas.
+
+Si lo instalaste en una ruta personalizada, indícala antes de compilar:
+
+```bat
+set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+build\build_windows.bat
+```
+
+Otra opción es abrir el *Inno Setup Compiler* desde el menú inicio y ejecutar
+ahí el script.
 
 Compila todo de una vez:
 
@@ -51,7 +65,7 @@ build\build_windows.bat
 Resultado:
 
 - `dist\Vigia\Vigia.exe` — la aplicación sin instalar (carpeta portátil)
-- `dist\Vigia-Setup-0.1.0.exe` — el instalador
+- `dist\Vigia-Setup-1.0.1.exe` — el instalador
 
 El instalador:
 - instala el programa en `%LOCALAPPDATA%\Programs\Vigia`,
@@ -59,13 +73,81 @@ El instalador:
 - opcionalmente lo arranca con Windows,
 - **no borra** `%APPDATA%\Vigia` al desinstalar.
 
+## Solución de problemas
+
+- **"No se encontró ISCC.exe de Inno Setup 6 en el PATH"** — el script ya
+  detecta automáticamente las rutas por defecto de Inno Setup 6 y 7. Si
+  todavía no lo encuentra, usa `set "ISCC_PATH=..."` como se indica más
+  arriba. Puedes comprobar la ruta con:
+  `dir "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"`.
+- **`Vigia.exe` no arranca con `'NoneType' object has no attribute 'isatty'`
+  / `Unable to configure formatter 'default'`** — ocurre por ejecutar uvicorn
+  dentro de un `.exe` sin consola (`console=False`), donde Windows deja
+  `stdout/stderr` a `None`. El punto de entrada ahora redirige esos flujos a
+  `os.devnull` y apaga los colores de uvicorn, así que la app arranca sin
+  ventana de consola y guarda sus logs en `%APPDATA%\Vigia\logs\vigia.log`.
+  Es necesario **volver a compilar** el `.exe` con el código corregido.
+- **Al hacer doble clic en `Vigia.exe` no se ve nada** — si el `.exe` es una
+  aplicación sin consola, un fallo de arranque parecía no mostrar nada. Ahora
+  el arranque deja una marca en
+  `%APPDATA%\Vigia\logs\vigia-startup.log` y cualquier excepción se guarda en
+  `%APPDATA%\Vigia\logs\startup_error.log` además de mostrar un aviso en
+  Windows. Si el puerto 8000 está ocupado, el aviso indica que puedes cerrar
+  la otra instancia o lanzar `Vigia.exe --port 8001`.
+- **`ModuleNotFoundError: No module named 'app.main'` al abrir el `.exe`** —
+  si se encarga la app a Uvicorn como cadena (`"app.main:app"`), PyInstaller
+  puede no empaquetar `app.main` de forma fiable. `vigia.py` ahora importa
+  `from app.main import app` directamente y pasa la app ya cargada a Uvicorn,
+  por lo que PyInstaller la incluye siempre.
+- **Tabs muertos, no se puede añadir/borrar cámaras, interfaz "vieja"** —
+  suele deberse a un `.exe` anterior o a una caché del service-worker de la
+  PWA. Tras actualizar el código hay que **recompilar** (`build_windows.bat`)
+  y, si se accede desde un navegador, recargar con `Ctrl+Shift+R`. Desde la
+  versión `1.0.1` la interfaz muestra su versión en **Ajustes** (por ejemplo
+  `2026-08-31.1`) y el service-worker se actualiza solo en caché nueva
+  (`vigia-pro-v5`), invalidando las versiones viejas.
+
+## Probar / depurar sin crear el `.exe` (Windows)
+
+Para ver la interfaz en el navegador y descargar depurar con F12, con un
+solo clic:
+
+```bat
+build\run_dev_web.bat
+```
+
+Ese script crea `.venv` si hace falta, instala dependencias y arranca:
+
+```
+http://127.0.0.1:8001/
+```
+
+Además abre una página de **diagnóstico del servidor** en:
+
+```
+http://127.0.0.1:8001/__vigia_debug
+```
+
+Esa página no usa la interfaz normal ni las pestañas; muestra si el backend
+responde, la versión servida, el número de cámaras y qué `app.js` está
+sirviendo el navegador. Es la forma más rápida de ver si el problema es una
+caché/interfaz vieja o el backend.
+
+También puedes arrancarlo a mano:
+
+```bat
+.venv\Scripts\activate && python vigia.py --browser --port 8001
+```
+
 ## macOS / Linux
 
 Puedes usar PyInstaller igualmente (`pyinstaller --noconfirm build/vigia.spec`
 y adaptar `console=False`), o simplemente distribuir `start.sh`/`start.bat`,
-que instalan dependencias automáticamente y abren el navegador.
+que instalan dependencias automáticamente y abren la interfaz.
 
 ## En marcha
 
-Al arrancar, Vigía abre el navegador en `http://127.0.0.1:8000` automáticamente
-(usa `--no-browser` para evitarlo).
+En Windows, al arrancar, Vigía abre **su propia ventana de escritorio**
+(`pywebview`) apuntando a `http://127.0.0.1:8000`. Si prefieres que se abra en
+el navegador usa `--browser`; para no abrir ninguna ventana usa `--no-browser`.
+Si pywebview no está instalado, Vigía cae automáticamente al navegador.

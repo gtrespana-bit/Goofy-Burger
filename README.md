@@ -6,27 +6,34 @@ ocurrido. Sin nubes, sin cuotas, sin depender de la app del fabricante.
 
 ```text
 Cámara RTSP ─┐
-Webcam USB  ─┼─► Vigía ─► grabación por segmentos / clips por movimiento
-Fichero     ─┘              │
-                            ├─► detección de movimiento + IA (YOLO opcional)
-                            ├─► directo MJPEG en el navegador
-                            ├─► eventos con instantáneas
-                            └─► avisos: Telegram · ntfy · webhook · email
+Webcam USB  ─┼─► Vigía Pro ─► grabación por segmentos / clips por movimiento
+Fichero     ─┘               │
+                             ├─► detección de movimiento + IA (YOLO opcional)
+                             ├─► grabación continua, por movimiento, inteligente o por horario
+                             ├─► calidad, resolución, fps, bitrate y CRF por cámara
+                             ├─► zonas, máscaras de privacidad, tamper y anti-falsos positivos
+                             ├─► directo MJPEG en el navegador / ventana de escritorio
+                             ├─► eventos, instantáneas, analítica y gestión de almacenamiento
+                             └─► avisos: Telegram · ntfy · webhook · Discord · Pushover · email
 ```
 
 ## Instalar como aplicación de escritorio
 
 Vigía se puede empaquetar como un **programa de ordenador de verdad** (`.exe`
-autocontenido + instalador de Windows), que **abre el navegador solo**, con
-ONVIF y ffmpeg incluidos, y que **conserva tus datos al actualizar** (la
-configuración y las grabaciones viven en `%APPDATA%\Vigia`, fuera del programa).
+autocontenido + instalador de Windows). Al abrirlo, la interfaz se muestra en
+**su propia ventana de escritorio** (ya no se abre en el navegador), con ONVIF
+y ffmpeg incluidos, y **conserva tus datos al actualizar** (la configuración y
+las grabaciones viven en `%APPDATA%\Vigia`, fuera del programa).
 
 ```bat
 build\build_windows.bat
 ```
 
-Esto genera `dist\Vigia-Setup-0.1.0.exe` (instalador) y `dist\Vigia\Vigia.exe`
-(carpeta portátil). Detalles en [`build/BUILDING.md`](build/BUILDING.md).
+Esto genera `dist\Vigia-Setup-1.0.1.exe` (instalador) y `dist\Vigia\Vigia.exe`
+(carpeta portátil). Resta instalar [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(o 7); el script lo encuentra solo. Si lo instalaste en una ruta
+personalizada: `set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`.
+Detalles en [`build/BUILDING.md`](build/BUILDING.md).
 
 ## Arrancar en 2 minutos (desde el código)
 
@@ -39,8 +46,9 @@ Esto genera `dist\Vigia-Setup-0.1.0.exe` (instalador) y `dist\Vigia\Vigia.exe`
 ./start.sh --lan      # accesible desde otros equipos de la casa
 ```
 
-Vigía **abre el navegador automáticamente** en <http://localhost:8000> (usa
-`--no-browser` para evitarlo). Pulsa **+ Añadir cámara**.
+Vigía se abre en **su propia ventana de escritorio** (usa `--browser` si
+prefieres el navegador, o `--no-browser` para no abrir ninguna ventana).
+Pulsa **+ Añadir cámara**.
 
 > ¿Quieres verlo funcionando antes de conectar nada? Crea una cámara de
 > **tipo demo**: genera vídeo sintético con movimiento y verás directo,
@@ -62,7 +70,8 @@ python vigia.py --lan --port 8000
 | **ffmpeg** | recomendado | grabación sin recodificar y miniaturas. Si no está, Vigía intenta usar el binario de `pip install imageio-ffmpeg` |
 | `ultralytics` | opcional | detectar **personas, vehículos y mascotas** con YOLO en vez de "movimiento" a secas |
 
-> `onvif-zeep` (ONVIF: detectar todas las lentes, PTZ, presets, snapshots) e
+> `onvif-zeep` (ONVIF: detectar todas las lentes, PTZ, presets, snapshots),
+> `dvrip` (NetIP por el puerto 34567: enumerar y abrir lentes iCSee/XMEye) e
 > `imageio-ffmpeg` (grabación sin recodificar) **ya se instalan con el
 > programa** — no hace falta instalarlos aparte. Solo la detección con IA es
 > opcional:
@@ -82,6 +91,8 @@ pip install ultralytics     # detección con IA (opcional)
 **Vídeo**
 - Directo MJPEG en el navegador (sin plugins ni WebRTC).
 - Grabación continua por segmentos con `-c copy` (copia el stream: ~0 % de CPU).
+- **Modos**: continua, sólo movimiento, **inteligente** (continua + clips) y **por horario**.
+- **Calidad premium**: perfil alto/medio/bajo o personalizado con CRF, preset x264, bitrate, resolución y FPS destino por cámara.
 - Clips por movimiento **con pre-grabación** (guarda los 5 s anteriores al evento).
 - Instantáneas con las cajas de detección dibujadas.
 - Reproductor con miniaturas, descarga y borrado.
@@ -89,20 +100,26 @@ pip install ultralytics     # detección con IA (opcional)
 **Detección**
 - Sustractor de fondo con sensibilidad y tamaño mínimo ajustables.
 - **Zonas** de inclusión/exclusión dibujadas sobre la imagen (olvida la acera o la copa del árbol).
-- Filtro anti-cambios de luz (IR noche/día, faros).
-- Modo IA: sólo avisa si hay persona, coche, perro… (YOLO).
+- **Máscaras de privacidad** que siempre se ignoran (ventanas, puertas, televisores…).
+- **Horarios** de detección (p. ej. sólo de noche, sólo entre semana).
+- Filtro anti-cambios de luz (IR noche/día, faros) y límite de eventos por minuto.
+- **Detección de cámara tapada / manipulación** (taponazo, cambio extremo de imagen).
+- Modo IA: sólo avisa si hay persona, coche, perro… (YOLO), con clases, confianza, frecuencia y tamaño de imagen configurables.
 
 **Alertas y privacidad**
-- Telegram, ntfy, webhook HTTP y correo, con imagen adjunta y tiempo mínimo entre avisos.
+- Telegram, ntfy, webhook HTTP, **Discord**, **Pushover** y correo, con imagen adjunta y tiempo mínimo entre avisos.
+- Filtro por etiqueta en cada cámara (sólo persona, sólo coche…) y límite de avisos por hora.
 - Modo **fuera de casa** para activar sólo ciertas cámaras.
+- Marcas de agua / overlay (fecha, nombre y ubicación) en directo e instantáneas.
 - Usuario/contraseña opcional (HTTP Basic).
-- Retención por días y por espacio máximo en disco, con limpieza automática.
+- Retención por días y por espacio máximo en disco, con limpieza automática y retención propia por cámara.
 
 ## Cómo encuentra tus cámaras
 
 1. **ONVIF** (estándar): Vigía manda un Probe WS-Discovery a `239.255.255.250:3702` y las cámarascontestan con su nombre, modelo y URL de servicio.
 2. **Escaneo de red**: recorre tu subred buscando puertos típicos (554, 8554, 80, 8080…).
 3. **Sondeo RTSP**: prueba rutas conocidas (`/h264Preview_01_main`, `/Streaming/Channels/101`, `/cam/realmonitor?channel=1&subtype=0`…) con `DESCRIBE`. Si la cámara responde 200 o 401, existe.
+4. **DVRIP/NetIP** (puerto `34567`): las iCSee/XMEye responden al protocolo que usa su app; Vigía puede autenticarse, enumerar las lentes y abrirlas directamente sin depender de RTSP.
 
 URLs típicas:
 
@@ -119,20 +136,28 @@ URLs típicas:
 > con la que entras en la app iCSee. Vigía las detecta y sondea automáticamente.
 >
 > Las cámaras **multi-lente** (p. ej. "2 en 1" o "3 en 1") exponen cada lente
-> como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, sobre todo, como
-> un **perfil ONVIF** independiente en el puerto **8899** con su propia URL
-> RTSP. La forma más fiable de detectarlas **todas** es el **🔧 Diagnosticar
-> iCSee**: si el 8899 está abierto, Vigía enumera los perfiles ONVIF (uno por
-> lente) y te ofrece **"➕ Añadir los N"** para darlas de alta todas de golpe,
-> cada lente como **cámara independiente** (con su propio directo, detección,
-> grabación y PTZ). Si además el firmware expone el canal 0 por RTSP, ese es el
-> **mosaico** (todas las lentes en una sola imagen).
+> como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, normalmente,
+> como un **perfil ONVIF** independiente con su propia URL RTSP. La forma más
+> fiable de detectarlas **todas** es el **🔧 Diagnosticar iCSee**: Vigía
+> usa **varias vías** para no dejarte lentes fuera:
 >
-> **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF en el
-> puerto 8899** (cuenta `admin`, no la de la app). Vigía lo configura solo al
-> añadir una cámara iCSee (ONVIF va incluido en el programa). Algunas iCSee
-> multi-lente no traen ONVIF y sólo hablan su protocolo propietario (NetIP/DVRIP
-> por el puerto 34567); en ese caso el PTZ no está disponible vía ONVIF.
+> 1. **RTSP** (`channel=1/2/3`): agrupa los canales que la cámara sí exponga.
+> 2. **ONVIF** en `8899/80/8080/8000`: lista perfiles (uno por lente) y su URL RTSP.
+> 3. **DVRIP/NetIP (puerto 34567)**: es el protocolo que usa la app iCSee. En
+>    muchos modelos **3-en-1** es la única vía fiable porque `channel=1/2/3` por
+>    RTSP **no cambia de lente**. Vigía autentica, lee cuántas lentes tiene y las
+>    abre como fuente nativa DVRIP.
+>
+> En la sección **📷 Cámara multi-lente** hay un botón **"➕ Añadir los N"** que
+> da de alta todas las lentes de golpe, cada una como **cámara independiente**
+> (directo, detección, grabación y, si corresponde, PTZ).
+>
+> **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF**
+> (Vigía prueba automáticamente 8899, 80, 8080 y 8000; cuenta `admin`, no la de
+> la app). Al añadir las lentes detectadas, Vigía activa PTZ sólo en la lente
+> giratoria y usa su token de perfil correcto. Si la cámara no trae ONVIF, el
+> vídeo sigue funcionando por DVRIP pero el movimiento/zoom no está disponible
+> (no hay un estándar público universal para PTZ por NetIP).
 >
 > **Detección de movimiento**: la hace Vigía analizando el vídeo (sustractor de
 > fondo, con sensibilidad y zonas), así que no necesitas activar nada en la app
@@ -152,8 +177,9 @@ Pasos:
 
 1. En el asistente «Añadir cámara» escribe la IP de tu cámara en el campo
    **«IP de la cámara»** y pulsa **🔧 Diagnosticar iCSee**. Vigía comprobará
-   los puertos (RTSP 554, ONVIF 8899, web 80…) y sondeará todas las variantes
-   RTSP con varias cuentas, y te dirá exactamente por qué no hay imagen.
+   los puertos (RTSP 554, ONVIF 8899/80/8080/8000, web 80…) y sondeará todas
+   las variantes RTSP (incluidos `channel=1..4` y `channel=0`) con varias
+   cuentas, y te dirá exactamente por qué no hay imagen.
 2. Si el diagnóstico dice que **RTSP (554) está cerrado**: entra por la web
    (`http://IP/`) o en la app iCSee → ajustes del dispositivo y **activa RTSP**
    (puerto 554); reinicia la cámara y vuelve a diagnosticar.
@@ -162,9 +188,10 @@ Pasos:
    `rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream`
    (la `password` se deja vacía; si le pusiste contraseña a `admin`, ponla).
 4. Si es **multi-lente y solo ves la principal**: el diagnóstico te mostrará
-   la sección **📷 Cámara multi-lente** con **"➕ Añadir los N"** (detectada vía
-   ONVIF en el 8899). Púlsalo y añadirá todas las lentes de una vez, cada una
-   como cámara independiente **con sus botones de mover (PTZ)**.
+   la sección **📷 Cámara iCSee 3 en 1 / multi-lente** con **"➕ Añadir los N"**
+   (agrupando los canales RTSP y, si es posible, los perfiles ONVIF). Púlsalo y
+   añadirá todas las lentes de una vez, cada una como cámara independiente **y
+   con PTZ sólo en la lente giratoria**.
 5. Pega la URL en **«URL RTSP»** y pulsa **Probar conexión** para ver una foto
    real antes de guardar.
 
@@ -205,6 +232,50 @@ código, Vigía la sigue usando (para no perder lo que ya tenías). Puedes forza
 la ubicación con la variable `VIGIA_DATA_DIR` y moverla desde
 **Ajustes → Almacenamiento → Carpeta de grabaciones**.
 
+## Diagnóstico de errores
+
+Si la interfaz normal no responde, abre directamente la página de
+diagnóstico del servidor:
+
+```
+http://127.0.0.1:8000/__vigia_debug
+```
+
+No usa las pestañas ni `app.js`: muestra si el backend responde, la versión
+servida, el número de cámaras y permite ver al instante si el navegador está
+sirviendo una **interfaz vieja/cacheada**.
+
+En Windows, para probar **sin crear el `.exe`** y poder usar F12:
+
+```bat
+build\run_dev_web.bat
+```
+
+Eso abre la interfaz en el navegador en `http://127.0.0.1:8001/` con una
+carpeta de datos vacía (`devdata`), sin tocar tu configuración real. Para
+abrir con tus cámaras, ejecuta a mano:
+
+```bat
+.venv\Scripts\activate && python vigia.py --browser --port 8001
+```
+
+Pulsa el botón **🩺** de la barra superior (o **Ajustes → 🩺 Diagnóstico y errores**).
+Muestra, en una sola pantalla:
+
+- si la carpeta de datos es escribible,
+- ffmpeg, OpenCV, ONVIF, DVRIP/NetIP, Web Push e IA instalados o no,
+- el estado y **último error** de cada cámara,
+- las últimas líneas de `logs/vigia.log` y los errores de arranque,
+- botón para descargar el log completo (las credenciales se ocultan).
+
+Si el programa no abre, los errores de arranque se guardan en:
+
+```
+%APPDATA%\Vigia\logs\startup_error.log      (Windows)
+~/Library/Application Support/Vigia/logs/startup_error.log   (macOS)
+~/.local/share/vigia/logs/startup_error.log (Linux)
+```
+
 ## API
 
 La interfaz habla con una API REST documentada en <http://localhost:8000/docs>. Lo más útil:
@@ -216,6 +287,9 @@ curl -X POST localhost:8000/api/system/discover \
      -H 'Content-Type: application/json' \
      -d '{"mode":"onvif","username":"admin","password":"1234"}'
 curl -X POST localhost:8000/api/cameras/ID/record?seconds=60   # grabación manual
+curl localhost:8000/api/system/diagnostics                     # dependencias + errores
+curl localhost:8000/api/system/logs/tail?file=vigia.log        # último log
+curl -X POST localhost:8000/api/system/dvrip/discover          # cámaras iCSee NetIP
 ```
 
 ## Consejos

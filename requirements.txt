@@ -11,10 +11,23 @@ apscheduler>=3.10
 # Incluida SIEMPRE: es la vía para ver todas las lentes y controlar el giro.
 onvif-zeep>=0.2.12
 
+# DVRIP/NetIP (puerto 34567): protocolo propietario de las iCSee/XMEye.
+# En modelos 3-en-1 es la única forma fiable de enumerar y abrir las 3 lentes
+# cuando RTSP channel=1/2/3 no cambia de lente.
+dvrip>=0.0.3,<0.1
+
 # ffmpeg (grabación sin recodificar, clips, miniaturas). imageio-ffmpeg trae
 # un binario de ffmpeg empaquetado, así que grabar funciona sin instalar nada
 # más (si el sistema ya tiene ffmpeg, se usa ese).
 imageio-ffmpeg>=0.4.9
+
+# Ventana propia de escritorio (Windows): evita abrir la interfaz en el
+# navegador. En macOS/Linux se puede usar igual si el entorno lo soporta.
+pywebview>=5.0; platform_system == "Windows"
+
+# --- Opcional (recomendado): notificaciones push reales al móvil (Web Push)
+# Descomenta para recibir notificaciones nativas en la PWA instalada:
+pywebpush>=1.14.0
 
 # --- Opcional (recomendado): detección con IA (personas / vehículos / mascotas)
 # ultralytics>=8.1

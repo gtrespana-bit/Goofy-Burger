@@ -10,7 +10,7 @@
 ;   ISCC.exe build\installer.iss   (o:  build\build_windows.bat)
 
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "1.0.1"
 #endif
 #ifndef MyAppSource
   #define MyAppSource "..\dist\Vigia\*"
@@ -20,7 +20,15 @@
 #define MyAppPublisher "Vigia"
 #define MyAppURL "https://github.com/gtrespana-bit/Goofy-Burger"
 #define MyAppExeName "Vigia.exe"
-#define MyIcon "icon.ico"
+#define MyIcon "vigia.ico"
+
+; x64compatible (soporta Arm64 Windows 11 con emulación x64) existe desde
+; Inno Setup 6.3.0. Con versiones anteriores se usa x64.
+#if VER < EncodeVer(6,3,0)
+  #define MyArchitecture "x64"
+#else
+  #define MyArchitecture "x64compatible"
+#endif
 
 [Setup]
 ; NOTA: este AppId debe ser único. Si distribuyes tu propia versión,
@@ -42,8 +50,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64compatible
-ArchitecturesInstallIn64BitMode=x64compatible
+ArchitecturesAllowed={#MyArchitecture}
+ArchitecturesInstallIn64BitMode={#MyArchitecture}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; Desinstalar borra el programa pero NO la carpeta %APPDATA%\Vigia (datos).
 [InstallDelete]
