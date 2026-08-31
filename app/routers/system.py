@@ -26,7 +26,7 @@ from .. import events_store
 router = APIRouter(prefix="/system", tags=["system"])
 
 START_TIME = time.time()
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PREMIUM_FEATURES = [
     "Grabación continua, por movimiento, inteligente y por horario",
     "Calidad de grabación, resolución, fps, bitrate y CRF por cámara",

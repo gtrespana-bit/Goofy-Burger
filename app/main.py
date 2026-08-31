@@ -40,7 +40,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Vigía",
     description="Monitoriza y graba tus cámaras en casa: RTSP, ONVIF y USB.",
-    version="0.1.0",
+    version="1.0.1",
     lifespan=lifespan,
 )
 
@@ -59,7 +59,11 @@ async def no_cache_ui(request: Request, call_next):
     """Evita que la PWA/navegador sirvan una versión vieja de la interfaz."""
     response = await call_next(request)
     path = request.url.path
-    if not path.startswith("/api/") and (
+    if path.startswith("/api/"):
+        # Los datos (cámaras, eventos, ajustes) son dinámicos: no deben
+        # quedarse en la caché HTTP ni dar datos antiguos en la UI.
+        response.headers.setdefault("Cache-Control", "no-store")
+    elif (
         path in ("/", "/index.html", "/app.js", "/styles.css", "/service-worker.js", "/manifest.json")
         or path.endswith((".js", ".css", ".html"))
     ):

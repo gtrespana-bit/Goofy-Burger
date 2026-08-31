@@ -65,7 +65,7 @@ build\build_windows.bat
 Resultado:
 
 - `dist\Vigia\Vigia.exe` — la aplicación sin instalar (carpeta portátil)
-- `dist\Vigia-Setup-0.1.0.exe` — el instalador
+- `dist\Vigia-Setup-1.0.1.exe` — el instalador
 
 El instalador:
 - instala el programa en `%LOCALAPPDATA%\Programs\Vigia`,
@@ -99,6 +99,13 @@ El instalador:
   puede no empaquetar `app.main` de forma fiable. `vigia.py` ahora importa
   `from app.main import app` directamente y pasa la app ya cargada a Uvicorn,
   por lo que PyInstaller la incluye siempre.
+- **Tabs muertos, no se puede añadir/borrar cámaras, interfaz "vieja"** —
+  suele deberse a un `.exe` anterior o a una caché del service-worker de la
+  PWA. Tras actualizar el código hay que **recompilar** (`build_windows.bat`)
+  y, si se accede desde un navegador, recargar con `Ctrl+Shift+R`. Desde la
+  versión `1.0.1` la interfaz muestra su versión en **Ajustes** (por ejemplo
+  `2026-08-31.1`) y el service-worker se actualiza solo en caché nueva
+  (`vigia-pro-v5`), invalidando las versiones viejas.
 
 ## macOS / Linux
 

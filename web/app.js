@@ -43,6 +43,22 @@ function todayStr(offsetDays = 0) {
   return d.toISOString().slice(0, 10);
 }
 
+/* Versión de la interfaz: se muestra en Ajustes y se usa para invalidar
+   versiones viejas cacheadas por la PWA o por un .exe anterior. */
+const UI_VERSION = '2026-08-31.1';
+
+function lsGet(key, fallback = null) {
+  try { const v = localStorage.getItem(key); return v === null ? fallback : v; }
+  catch { return fallback; }
+}
+function lsSet(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* sin almacenamiento */ }
+}
+function lsJson(key, fallback = null) {
+  try { const v = lsGet(key); return v === null ? fallback : JSON.parse(v); }
+  catch { return fallback; }
+}
+
 async function api(path, opts = {}) {
   const res = await fetch('/api' + path, {
     credentials: 'same-origin',
@@ -170,7 +186,7 @@ function setupPwa() {
   const alarmBtn = $('#btn-alarm');
   if (alarmBtn) alarmBtn.onclick = () => {
     state.alarmMuted = !state.alarmMuted;
-    localStorage.setItem('vigia-alarm-muted', state.alarmMuted ? '1' : '0');
+    lsSet('vigia-alarm-muted', state.alarmMuted ? '1' : '0');
     renderTopbar();
     toast(state.alarmMuted ? 'Sonido de alarma silenciado' : 'Sonido de alarma activado');
   };
@@ -202,9 +218,9 @@ const state = {
   info: {},
   filters: { recCamera: '', recDate: '', recKind: '', evCamera: '', evLabel: '', evUnack: false },
   lastEventTs: null,
-  multiview: { layout: 'auto', order: JSON.parse(localStorage.getItem('vigia-multiview-order') || '[]') },
+  multiview: { layout: 'auto', order: lsJson('vigia-multiview-order', []) },
   auth: { enabled: false, user: null, running: false },
-  alarmMuted: localStorage.getItem('vigia-alarm-muted') === '1',
+  alarmMuted: lsGet('vigia-alarm-muted') === '1',
   push: { status: null, subscriber: null },
   installPrompt: null,
 };
@@ -216,20 +232,22 @@ function openModal(title, html, opts = {}) {
   const modal = $('#modal');
   const modalTitle = $('#modal-title');
   const modalBody = $('#modal-body');
-  
+
   if (modalTitle) modalTitle.textContent = title;
   if (modalBody) modalBody.innerHTML = html || '';
-  
+
   if (modal) {
     const modalEl = modal.querySelector('.modal');
     if (modalEl) modalEl.classList.toggle('wide', !!opts.wide);
     modal.hidden = false;
   }
-  
+
   if (opts.onMount && modalBody) opts.onMount(modalBody);
   return modalBody;
 }
+let _confirmYes = null;
 function closeModal() {
+  _confirmYes = null;
   const modal = $('#modal');
   const modalBody = $('#modal-body');
   if (modal) modal.hidden = true;
@@ -237,15 +255,12 @@ function closeModal() {
 }
 
 function confirmModal(title, text, onYes) {
+  _confirmYes = onYes;
   openModal(title, `<p>${esc(text)}</p>
     <div class="row" style="justify-content:flex-end;margin-top:18px">
       <button class="btn ghost" data-close>Cancelar</button>
       <button class="btn danger" data-yes>Confirmar</button>
     </div>`);
-  $('#modal-body').addEventListener('click', e => {
-    if (e.target.hasAttribute('data-yes')) { closeModal(); onYes(); }
-    if (e.target.hasAttribute('data-close') || e.target.id === 'modal-close') closeModal();
-  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -255,25 +270,43 @@ function confirmModal(title, text, onYes) {
 (function() {
   const modal = $('#modal');
   const modalClose = $('#modal-close');
-  
+  const modalBody = $('#modal-body');
+
   // Asegurarse de que el modal esté oculto al inicio
   if (modal) {
     modal.hidden = true;
-    
+
     // Configurar event listeners del modal de inmediato
     if (modalClose) {
       modalClose.onclick = closeModal;
     }
-    
-    modal.addEventListener('click', e => { 
-      if (e.target.id === 'modal') closeModal(); 
+
+    modal.addEventListener('click', e => {
+      if (e.target.id === 'modal') closeModal();
     });
   }
-  
-  document.addEventListener('keydown', e => { 
-    if (e.key === 'Escape') closeModal(); 
+
+  // Delegación única para los diálogos de confirmación. Antes este listener se
+  // añadía una vez por confirmModal y quedaba acumulado (podía ejecutar un
+  // confirmación vieja al usar el modal después).
+  if (modalBody) {
+    modalBody.addEventListener('click', e => {
+      const t = e.target;
+      const isClose = t && t.hasAttribute && (t.hasAttribute('data-close') || t.id === 'modal-close');
+      if (isClose) { _confirmYes = null; closeModal(); return; }
+      if (t && t.hasAttribute && t.hasAttribute('data-yes')) {
+        const fn = _confirmYes;
+        _confirmYes = null;
+        closeModal();
+        if (typeof fn === 'function') fn();
+      }
+    });
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeModal();
   });
-  
+
   // Failsafe: ocultar modal después de 500ms por si algo lo hizo visible
   setTimeout(() => {
     const m = $('#modal');
@@ -310,9 +343,6 @@ async function startApp() {
       location.reload();
     });
 
-    $$('#tabs .tab').forEach(tab => {
-      tab.onclick = () => { location.hash = '#/' + tab.dataset.view; };
-    });
     window.addEventListener('hashchange', route);
 
     await refresh(true);
@@ -373,6 +403,7 @@ function showLogin() {
 }
 
 async function boot() {
+  console.info(`Vigía UI ${UI_VERSION}`);
   setupPwa();
   // Navegación robusta: se vincula antes de la autenticación para que los
   // tabs funcionen aunque algo falle después al cargar los datos.
@@ -733,9 +764,13 @@ async function renderDashboard() {
       confirmModal('Eliminar cámara',
         `Se eliminará "${cam?.name || id}". Las grabaciones existentes se conservan.`,
         async () => {
-          await api(`/cameras/${id}`, { method: 'DELETE' });
-          toast('Cámara eliminada');
-          refresh(true);
+          try {
+            await api(`/cameras/${id}`, { method: 'DELETE' });
+            toast('Cámara eliminada');
+            refresh(true);
+          } catch (err) {
+            toast(err.message || 'No se pudo eliminar la cámara', 'err');
+          }
         });
     };
   });
@@ -1922,6 +1957,7 @@ async function renderSettings() {
         <button class="btn danger" id="sys-reset">Restablecer ajustes</button>
         <button class="btn danger" id="sys-reset-all">Borrar ajustes y grabaciones</button>
       </div>
+      <p class="muted" style="margin-top:12px">Versión de interfaz: <b>${UI_VERSION}</b> · backend: ${esc(info.version || '?')}</p>
     </div>
   </div>`;
 
@@ -3322,8 +3358,12 @@ async function cameraSettings(id) {
   };
   $('#c-delete').onclick = () => confirmModal('Eliminar cámara',
     `Se eliminará "${cam.name}". Puedes borrar también sus grabaciones.`, async () => {
-      await api(`/cameras/${id}?purge=true`, { method: 'DELETE' });
-      toast('Cámara eliminada'); refresh(true);
+      try {
+        await api(`/cameras/${id}?purge=true`, { method: 'DELETE' });
+        toast('Cámara eliminada'); refresh(true);
+      } catch (err) {
+        toast(err.message || 'No se pudo eliminar la cámara', 'err');
+      }
     });
 }
 

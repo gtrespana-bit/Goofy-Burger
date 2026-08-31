@@ -16,7 +16,7 @@ REM Uso:  build\build_windows.bat
 setlocal EnableExtensions
 cd /d "%~dp0\.."
 
-set VERSION=0.1.0
+set VERSION=1.0.1
 set "ISCC_EXE="
 
 REM Preparar variables con las rutas de instalacion (evita problemas con el
