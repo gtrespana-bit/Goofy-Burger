@@ -1,5 +1,5 @@
 /* Vigía Pro — service worker para la PWA (app instalable y arranque offline de la UI) */
-const CACHE = 'vigia-pro-v1';
+const CACHE = 'vigia-pro-v2';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/manifest.json', '/favicon.png'];
 
 self.addEventListener('install', (event) => {

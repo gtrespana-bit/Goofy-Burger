@@ -340,6 +340,7 @@ async function render() {
   if (view === 'camera') return await renderCamera();
   if (view === 'events') return await renderEvents();
   if (view === 'recordings') return await renderRecordings();
+  if (view === 'reports') return await renderReports();
   if (view === 'settings') return await renderSettings();
   return await renderDashboard();
 }
@@ -587,7 +588,8 @@ async function renderCamera() {
     <div>
       <h2 style="font-size:19px">${esc(cam.name)} ${cam.location ? `<span class="badge">📍 ${esc(cam.location)}</span>` : ''}</h2>
       <div class="muted">${esc(cam.group || 'General')} · ${stateLabel(cam.health?.state || 'stopped')}
-        · ${esc(cam.health?.resolution || '')} · grabación ${recMode} · ${quality}</div>
+        · ${esc(cam.health?.resolution || '')} · grabación ${recMode} · ${quality}
+        ${cam.detection?.analytics?.enabled || cam.health?.tracks ? `· 👁 ${cam.health?.tracks ?? 0} objeto(s)` : ''}</div>
       ${tags ? `<div class="row" style="margin-top:4px">${tags}</div>` : ''}
     </div>
     <div class="row">
@@ -910,6 +912,126 @@ function privacyEditor(cam) {
   };
 }
 
+function lineEditor(cam) {
+  const base = cam.detection?.analytics || {};
+  const lines = JSON.parse(JSON.stringify(base.lines || []));
+  let pending = [];
+  let adding = false;
+  openModal('Líneas de cruce', `
+    <p class="muted">Haz dos clics para dibujar una línea. Cuando un objeto la cruce se creará un evento
+      <b>line_cross</b> (requiere IA activa para objetos fiables).</p>
+    <div class="zone-editor"><canvas id="line-canvas"></canvas></div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="line-add">➕ Añadir línea</button>
+      <button class="btn ghost" id="line-clear">Borrar todas</button>
+      <span class="muted" id="line-count"></span>
+    </div>
+    <div id="line-list" style="margin-top:10px"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px">
+      <button class="btn ghost" id="line-cancel">Cancelar</button>
+      <button class="btn primary" id="line-save">Guardar líneas</button>
+    </div>`, { wide: true });
+
+  const canvas = $('#line-canvas');
+  const ctx = canvas.getContext('2d');
+  const img = new Image();
+  const rows = $('#line-list');
+
+  function refreshRows() {
+    rows.innerHTML = lines.map((l, i) => `
+      <div class="row" style="gap:6px;margin-bottom:6px;align-items:center">
+        <input class="line-name" data-i="${i}" value="${esc(l.name || ('Línea ' + (i+1)))}" style="flex:1">
+        <select class="line-dir" data-i="${i}">
+          <option value="both" ${l.direction !== 'in' && l.direction !== 'out' ? 'selected' : ''}>Ambos sentidos</option>
+          <option value="in" ${l.direction === 'in' ? 'selected' : ''}>Entrada</option>
+          <option value="out" ${l.direction === 'out' ? 'selected' : ''}>Salida</option>
+        </select>
+        <label class="checkline"><input type="checkbox" class="line-on" data-i="${i}" ${l.enabled !== false ? 'checked' : ''}> activa</label>
+        <button class="btn sm ghost" data-line-del="${i}">🗑</button>
+      </div>`).join('') || '<div class="muted">Aún no hay líneas.</div>';
+    $$('.line-name', rows).forEach(inp => inp.onchange = e => {
+      lines[+e.target.dataset.i].name = e.target.value.trim() || ('Línea ' + ((+e.target.dataset.i) + 1));
+      draw(); refreshRows();
+    });
+    $$('.line-dir', rows).forEach(sel => sel.onchange = e => {
+      lines[+e.target.dataset.i].direction = e.target.value;
+    });
+    $$('.line-on', rows).forEach(chk => chk.onchange = e => {
+      lines[+e.target.dataset.i].enabled = e.target.checked;
+      draw();
+    });
+    $$('[data-line-del]', rows).forEach(btn => btn.onclick = e => {
+      lines.splice(+e.target.dataset.lineDel, 1);
+      refreshRows(); draw();
+    });
+    $('#line-count').textContent = `${lines.length} línea(s)${adding ? ' · pulsa dos puntos en la imagen' : ''}`;
+  }
+
+  function draw() {
+    if (!img.complete || !img.naturalWidth) return;
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const pt = p => [p[0] * canvas.width, p[1] * canvas.height];
+    lines.forEach(l => {
+      const p1 = pt(l.p1), p2 = pt(l.p2);
+      ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+      ctx.strokeStyle = '#ff5050'; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.stroke();
+      [p1, p2].forEach(p => { ctx.beginPath(); ctx.arc(p[0], p[1], 5, 0, 7); ctx.fillStyle = '#ffb454'; ctx.fill(); });
+    });
+    if (pending.length) {
+      const p1 = pt(pending[0]);
+      ctx.beginPath(); ctx.arc(p1[0], p1[1], 6, 0, 7); ctx.fillStyle = '#ffb454'; ctx.fill();
+      if (pending.length > 1) {
+        const p2 = pt(pending[1]);
+        ctx.beginPath(); ctx.moveTo(p1[0], p1[1]); ctx.lineTo(p2[0], p2[1]);
+        ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 3; ctx.stroke();
+      }
+    }
+  }
+
+  img.onload = draw;
+  img.src = `/api/stream/${cam.id}/snapshot.jpg?force=true&t=${Date.now()}`;
+  img.onerror = () => toast('No se pudo cargar la imagen de la cámara', 'err');
+
+  canvas.onclick = e => {
+    if (!adding) return;
+    const r = canvas.getBoundingClientRect();
+    pending.push([(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height]);
+    if (pending.length === 2) {
+      const id = 'line_' + Math.random().toString(36).slice(2, 10);
+      lines.push({
+        id, name: 'Línea ' + (lines.length + 1), enabled: true,
+        direction: 'both', p1: pending[0], p2: pending[1],
+      });
+      pending = []; adding = false;
+      refreshRows(); draw();
+    } else {
+      draw();
+    }
+  };
+  $('#line-add').onclick = () => { adding = true; pending = []; $('#line-count').textContent = 'Pulsa dos puntos en la imagen'; };
+  $('#line-clear').onclick = () => { lines.length = 0; pending = []; adding = false; refreshRows(); draw(); };
+  $('#line-cancel').onclick = closeModal;
+  $('#line-save').onclick = async () => {
+    try {
+      await api(`/cameras/${cam.id}`, {
+        method: 'PATCH',
+        body: { detection: { analytics: {
+          enabled: base.enabled !== false,
+          tracking_enabled: base.tracking_enabled !== false,
+          line_crossing_enabled: base.line_crossing_enabled !== false,
+          lines,
+          max_track_age: base.max_track_age ?? 12,
+          line_cross_cooldown: base.line_cross_cooldown ?? 4,
+        } } },
+      });
+      toast('Líneas de cruce guardadas'); closeModal(); refresh(true);
+    } catch (e) { toast(e.message || 'No se pudo guardar', 'err'); }
+  };
+  refreshRows();
+}
+
 /* ------------------------------------------------------------------ */
 /* Eventos                                                             */
 /* ------------------------------------------------------------------ */
@@ -972,6 +1094,7 @@ function evItem(ev) {
       <div class="meta">
         <span>${fmtTime(ev.ts)}</span><span>${timeAgo(ev.ts)}</span>
         <span>${ev.score ?? 0}% imagen</span>
+        ${ev.meta?.line_name ? `<span>✂ ${esc(ev.meta.line_name)} (${esc(ev.meta.direction || '')})</span>` : ''}
         ${ev.notified?.length ? `<span>📤 ${esc(ev.notified.join(', '))}</span>` : ''}
         ${ev.acknowledged ? '<span>✓ revisado</span>' : ''}
       </div>
@@ -1008,6 +1131,7 @@ function eventModal(id) {
       <span class="tag ${esc(ev?.label || '')}">${esc(ev?.label || 'motion')}</span>
       <span class="muted">${fmtTime(ev?.ts || '')}</span>
       <span class="muted">${esc(ev?.camera_name || '')}</span>
+      ${ev?.meta?.line_name ? `<span class="muted">✂ ${esc(ev.meta.line_name)} · ${esc(ev.meta.direction || '')} · objeto ${esc(ev.meta.label || '')}</span>` : ''}
     </div>
     ${ev?.clip ? `<div class="row" style="margin-top:10px">
       <button class="btn primary" data-clip="${esc(ev.clip)}">▶ Ver clip</button></div>` : ''}
@@ -1049,6 +1173,83 @@ async function checkNewEvents() {
     }
     state.lastEventTs = ev.ts;
   } catch { /* silencioso */ }
+}
+
+/* ------------------------------------------------------------------ */
+/* Informes semanales                                                  */
+/* ------------------------------------------------------------------ */
+async function renderReports() {
+  if (!state.filters.repDate) state.filters.repDate = todayStr();
+  const [report, stats] = await Promise.all([
+    api('/analytics/report/weekly?date=' + encodeURIComponent(state.filters.repDate)),
+    api('/analytics/stats'),
+  ]);
+  const days = report.days || [];
+  const dayMax = Math.max(1, ...(days.map(d => d.total || 0)));
+  const statsCams = stats.cameras || [];
+
+  $('#view').innerHTML = `
+  <div class="panel">
+    <div class="spread">
+      <div class="row">
+        <h3>📊 Informe semanal</h3>
+        <input type="date" id="rep-date" value="${esc(state.filters.repDate)}">
+        <button class="btn sm ghost" id="rep-refresh">⟳</button>
+      </div>
+      <span class="muted">${esc(report.period.start)} → ${esc(report.period.end)}</span>
+    </div>
+    <div class="grid kpis" style="margin-top:12px">
+      <div class="kpi"><b>${report.total}</b><span>eventos</span></div>
+      <div class="kpi"><b>${report.unacknowledged}</b><span>sin revisar</span></div>
+      <div class="kpi"><b>${report.line_crosses.total}</b><span>cruce de líneas</span></div>
+      <div class="kpi"><b>${(Object.keys(report.by_camera || {})).length}</b><span>cámaras activas</span></div>
+    </div>
+  </div>
+
+  <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr))">
+    <div class="panel">
+      <h3>Por día</h3>
+      <div class="rep-bars">
+        ${days.map(d => `
+          <div class="rep-bar">
+            <span class="muted">${esc(d.date.slice(5))}</span>
+            <div class="bar" style="width:${Math.max(4, (d.total / dayMax) * 100)}%"><i></i></div>
+            <b>${d.total}</b>${d.line_crosses ? `<span class="cross">✂ ${d.line_crosses}</span>` : ''}
+          </div>`).join('')}
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Por cámara</h3>
+      <table><tr><th>Cámara</th><th>Eventos</th></tr>
+        ${Object.entries(report.by_camera || {}).sort((a,b)=>b[1]-a[1]).map(([name,c]) => `<tr><td>${esc(name)}</td><td><b>${c}</b></td></tr>`).join('')}
+      </table>
+      <h3>Por tipo</h3>
+      <div class="tags">${Object.entries(report.by_label || {}).sort((a,b)=>b[1]-a[1]).map(([l,c]) =>
+        `<span class="tag ${esc(l)}">${esc(l)} · ${c}</span>`).join('')}</div>
+    </div>
+    <div class="panel">
+      <h3>✂ Cruces de línea</h3>
+      ${(report.line_crosses.by_line && Object.keys(report.line_crosses.by_line).length)
+        ? Object.entries(report.line_crosses.by_line).map(([name, objs]) => `
+          <div style="margin-bottom:8px"><b>${esc(name)}</b>
+            <div class="tags" style="margin-top:4px">${Object.entries(objs).map(([k,v]) =>
+              `<span class="tag">${esc(k)} · ${v}</span>`).join('')}</div>
+          </div>`).join('')
+        : '<p class="muted">Sin cruces esta semana. Activa IA y dibuja líneas en Ajustes de cámara.</p>'}
+      <div class="divider"></div>
+      <h3>Analítica en vivo</h3>
+      <table><tr><th>Cámara</th><th>IA</th><th>Líneas</th><th>Objetos</th></tr>
+        ${statsCams.map(c => `<tr>
+          <td>${esc(c.name)}</td>
+          <td>${c.ai_enabled ? '✅' : '—'}</td>
+          <td>${c.lines}</td>
+          <td>${c.tracks ?? 0}</td></tr>`).join('')}
+      </table>
+    </div>
+  </div>`;
+
+  $('#rep-refresh').onclick = () => renderReports();
+  $('#rep-date').onchange = e => { state.filters.repDate = e.target.value; renderReports(); };
 }
 
 /* ------------------------------------------------------------------ */
@@ -1322,6 +1523,9 @@ async function renderSettings() {
       <p class="muted">Requiere <span class="kbd">pip install ultralytics</span>.
         Estado: <b>${info.ai_available ? 'disponible ✓' : 'no instalada'}</b></p>
       <label class="checkline"><input type="checkbox" id="dt-ai" ${s.detection?.ai_enabled ? 'checked' : ''}> Usar IA para confirmar los eventos</label>
+      <label class="checkline"><input type="checkbox" id="dt-an" ${s.detection?.analytics?.enabled !== false ? 'checked' : ''}> Analítica IA por defecto (seguimiento + cruces)</label>
+      <label class="checkline"><input type="checkbox" id="dt-an-track" ${s.detection?.analytics?.tracking_enabled !== false ? 'checked' : ''}> Seguimiento de objetos</label>
+      <label class="checkline"><input type="checkbox" id="dt-an-cross" ${s.detection?.analytics?.line_crossing_enabled !== false ? 'checked' : ''}> Cruce de líneas</label>
       <div class="field"><label>Modelo</label><input id="dt-model" value="${esc(s.detection?.ai_model || 'yolov8n.pt')}"></div>
       <div class="field"><label>Clases de interés (separadas por coma)</label>
         <input id="dt-labels" value="${esc((s.detection?.ai_labels || []).join(','))}"></div>
@@ -1471,6 +1675,14 @@ async function renderSettings() {
         ai_enabled: $('#dt-ai').checked, ai_model: $('#dt-model').value,
         ai_confidence: +$('#dt-conf').value,
         ai_labels: $('#dt-labels').value.split(',').map(s => s.trim()).filter(Boolean),
+        analytics: {
+          enabled: $('#dt-an').checked,
+          tracking_enabled: $('#dt-an-track').checked,
+          line_crossing_enabled: $('#dt-an-cross').checked,
+          lines: (s.detection?.analytics?.lines || []).map(l => ({ ...l })),
+          max_track_age: s.detection?.analytics?.max_track_age ?? 12,
+          line_cross_cooldown: s.detection?.analytics?.line_cross_cooldown ?? 4,
+        },
       },
     });
     await api('/settings/recording', {
@@ -2323,6 +2535,11 @@ async function cameraSettings(id) {
       <div class="field"><label>Cooldown (s)</label><input type="number" min="0" id="c-det-cool" value="${det.cooldown_seconds ?? 20}"></div>
       <div class="field"><label>Máx eventos/min (0=sín límite)</label><input type="number" min="0" id="c-det-maxmin" value="${det.max_events_per_minute ?? 0}"></div>
       <div class="field"><label>Zonas</label><button class="btn sm" id="c-zones">Editar zonas</button></div>
+      <div class="field"><label>Líneas de cruce</label><button class="btn sm" id="c-lines">✂ Editar líneas</button></div>
+      <label class="checkline"><input type="checkbox" id="c-an" ${det.analytics?.enabled !== false ? 'checked' : ''}> Analítica IA activa (seguimiento + cruce)</label>
+      <label class="checkline"><input type="checkbox" id="c-an-track" ${det.analytics?.tracking_enabled !== false ? 'checked' : ''}> Seguimiento de objetos</label>
+      <label class="checkline"><input type="checkbox" id="c-an-cross" ${det.analytics?.line_crossing_enabled !== false ? 'checked' : ''}> Cruce de líneas</label>
+      <div class="field grid-span2"><span class="hint">Para cruces fiables activa también <b>IA (personas/vehículos)</b> y dibuja líneas sobre la imagen.</span></div>
       <div class="field grid-span2">${scheduleField('c-det-schedule', det.schedule, 'La detección sólo está activa en estas franjas.')}</div>
       <label class="checkline"><input type="checkbox" id="c-det-light" ${det.ignore_light_change !== false ? 'checked' : ''}> Ignorar cambios globales de luz</label>
       <label class="checkline"><input type="checkbox" id="c-det-privacy" ${det.tamper_enabled ? 'checked' : ''}> Detectar cámara tapada / manipulación</label>
@@ -2369,6 +2586,7 @@ async function cameraSettings(id) {
 
   $('#c-cancel').onclick = closeModal;
   $('#c-zones').onclick = () => zoneEditor(cam);
+  $('#c-lines').onclick = () => lineEditor(cam);
   $('#c-save').onclick = async () => {
     let url = $('#c-url') ? $('#c-url').value.trim() : (cam.url || '');
     let sub = $('#c-sub') ? $('#c-sub').value.trim() : (cam.substream_url || '');
@@ -2429,6 +2647,14 @@ async function cameraSettings(id) {
       ai_confidence: +$('#c-det-conf').value,
       ai_every_n: +$('#c-det-every').value,
       ai_imgsz: +$('#c-det-imgsz').value,
+      analytics: {
+        enabled: $('#c-an').checked,
+        tracking_enabled: $('#c-an-track').checked,
+        line_crossing_enabled: $('#c-an-cross').checked,
+        lines: (det.analytics?.lines || []).map(l => ({ ...l })),
+        max_track_age: det.analytics?.max_track_age ?? 12,
+        line_cross_cooldown: det.analytics?.line_cross_cooldown ?? 4,
+      },
     };
     payload.alerts = {
       enabled: $('#c-alerts').checked,

@@ -119,6 +119,14 @@ def default_config() -> Dict[str, Any]:
             "ai_model": "yolov8n.pt",
             "ai_every_n": 3,
             "ai_imgsz": 640,
+            "analytics": {
+                "enabled": False,
+                "tracking_enabled": True,
+                "line_crossing_enabled": True,
+                "lines": [],
+                "max_track_age": 12,
+                "line_cross_cooldown": 4,
+            },
         },
         "recording": {
             "mode": "continuous",       # continuous | motion | smart | scheduled | off

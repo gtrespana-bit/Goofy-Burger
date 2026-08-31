@@ -24,6 +24,7 @@ from .capture import build_source
 from .detector import AIDetector, MotionDetector
 from .framebus import frame_bus
 from .recorder import ClipRecorder, SegmentRecorder
+from .tracker import ObjectTracker
 
 log = logging.getLogger("vigia.worker")
 
@@ -51,6 +52,11 @@ class CameraWorker(threading.Thread):
         self.detector = MotionDetector(camera.get("detection") or {})
         self.ai: Optional[AIDetector] = None
         self._ai_frame = 0
+        self.tracker: Optional[ObjectTracker] = None
+        self._analytics_warned = False
+        self._last_line_event = 0.0
+        self._line_event_times: List[float] = []
+        self._line_last: Dict[str, float] = {}
         self.segment: Optional[SegmentRecorder] = None
         self.clip: Optional[ClipRecorder] = None
         self.status: Dict[str, Any] = {
@@ -63,6 +69,7 @@ class CameraWorker(threading.Thread):
             "last_error": "",
             "recording": False,
             "events": 0,
+            "tracks": 0,
             "started_at": time.time(),
             "reconnects": 0,
         }
@@ -73,6 +80,14 @@ class CameraWorker(threading.Thread):
         self._last_tamper_event = 0.0
         self._tamper_ok_since = 0.0
         self._setup_recorders()
+        det0 = self.camera.get("detection") or {}
+        ana0 = det0.get("analytics") or {}
+        self.tracker = ObjectTracker(
+            max_age=int(ana0.get("max_track_age", 12) or 12),
+            max_dist=0.4,
+            lines=ana0.get("lines") or [],
+            line_cross_cooldown=float(ana0.get("line_cross_cooldown", 4) or 4),
+        )
 
     # ------------------------------------------------------------------
     # configuración
@@ -149,9 +164,25 @@ class CameraWorker(threading.Thread):
         prev_src = self.camera.get("source_type"), self.camera.get("url"), \
             self.camera.get("substream_url"), self.camera.get("device_index")
         self.camera = dict(camera)
-        self.detector.configure(camera.get("detection") or {})
+        det = camera.get("detection") or {}
+        self.detector.configure(det)
+        analytics = det.get("analytics") or {}
+        if self.tracker is None:
+            self.tracker = ObjectTracker(
+                max_age=int(analytics.get("max_track_age", 12) or 12),
+                max_dist=0.4,
+                lines=analytics.get("lines") or [],
+                line_cross_cooldown=float(analytics.get("line_cross_cooldown", 4) or 4),
+            )
+        else:
+            self.tracker.configure(
+                lines=analytics.get("lines") or [],
+                max_age=int(analytics.get("max_track_age", 12) or 12),
+            )
+            self.tracker.line_cross_cooldown = float(
+                analytics.get("line_cross_cooldown", 4) or 4
+            )
         if self.ai is not None:
-            det = camera.get("detection") or {}
             self.ai.configure(
                 det.get("ai_model", "yolov8n.pt"),
                 det.get("ai_confidence", 0.45),
@@ -277,10 +308,24 @@ class CameraWorker(threading.Thread):
                     last_detect = now
                     result = self.detector.process(frame)
                     self.status["detect_fps"] = result.fps
+                    ai_hit, ai_boxes, ai_labels, ai_confs = False, [], [], []
+                    if det_cfg.get("ai_enabled"):
+                        ai_hit, ai_boxes, ai_labels, ai_confs = self._predict_ai(frame, det_cfg)
                     if result.motion:
                         if visible is None:
                             visible = self._apply_overlay(frame)
-                        self._on_motion(frame, result, now, snapshot_frame=visible)
+                        self._on_motion(
+                            frame, result, now, snapshot_frame=visible,
+                            ai_hit=ai_hit, ai_boxes=ai_boxes,
+                            ai_labels=ai_labels, ai_confs=ai_confs,
+                        )
+                    if visible is None:
+                        visible = self._apply_overlay(frame)
+                    self._run_analytics(
+                        frame, visible, result, now,
+                        ai_hit=ai_hit, ai_boxes=ai_boxes,
+                        ai_labels=ai_labels, ai_confs=ai_confs,
+                    )
 
                 # --- detección de manipulación / cámara tapada ---
                 if det_cfg.get("tamper_enabled") and detection_active:
@@ -451,21 +496,140 @@ class CameraWorker(threading.Thread):
                 )
         return self.ai if (self.ai and self.ai.available) else None
 
-    def _on_motion(self, frame: np.ndarray, result, now: float, snapshot_frame: Optional[np.ndarray] = None) -> None:
+    def _predict_ai(self, frame: np.ndarray, det: Dict[str, Any]):
+        ai = self._ensure_ai()
+        if ai is None:
+            return False, [], [], []
+        self._ai_frame += 1
+        every_n = max(1, int(det.get("ai_every_n", 3) or 1))
+        return ai.process(frame, every_n=every_n, counter=self._ai_frame)
+
+    def _analytics_cfg(self) -> Dict[str, Any]:
+        return (self.camera.get("detection") or {}).get("analytics") or {}
+
+    def _run_analytics(
+        self, frame: np.ndarray, visible: np.ndarray, result, now: float,
+        ai_hit: bool = False,
+        ai_boxes: Optional[list] = None,
+        ai_labels: Optional[list] = None,
+        ai_confs: Optional[list] = None,
+    ) -> None:
+        cfg = self._analytics_cfg()
+        if not cfg.get("enabled", False) or self.tracker is None:
+            return
+        if not cfg.get("tracking_enabled", True):
+            return
+        det = self.camera.get("detection") or {}
+        lines = [ln for ln in (cfg.get("lines") or []) if ln.get("enabled", True)]
+
+        boxes, labels, confs = [], [], []
+        if det.get("ai_enabled"):
+            if ai_hit:
+                boxes = ai_boxes or []
+                labels = ai_labels or []
+                confs = ai_confs or []
+        elif result.motion:
+            boxes = result.boxes
+            labels = ["object"] * len(boxes)
+            confs = [0.0] * len(boxes)
+
+        h, w = frame.shape[:2]
+        if not boxes:
+            self.tracker.update(w, h, [], [], [], now=now)
+            self.status["tracks"] = 0
+            return
+        self.tracker.update(w, h, boxes, labels, confs, now=now)
+        self.status["tracks"] = len(self.tracker.current)
+        if (
+            not cfg.get("line_crossing_enabled", True)
+            or not lines
+            or self.tracker is None
+            or not self.tracker.crossings
+        ):
+            return
+
+        # Sólo cruzamos una vez cada cooldown por línea y cámara.
+        cooldown = max(0, int(cfg.get("line_cross_cooldown", 4) or 4))
+        for cross in self.tracker.crossings:
+            if cooldown and (now - self._last_line_event) < cooldown:
+                continue
+            line_event = self._make_line_event(
+                visible, result, now, cross, boxes, labels, confs,
+            )
+            if line_event:
+                self._last_line_event = now
+
+    def _make_line_event(self, visible: np.ndarray, result, now: float, cross,
+                         boxes: list, labels: list, confs: list) -> bool:
+        cfg = self._analytics_cfg()
+        line = next((ln for ln in (cfg.get("lines") or []) if str(ln.get("id")) == cross.line_id), None)
+        if line is None:
+            return False
+        alert = self.camera.get("alerts") or {}
+        wanted_labels = [str(x).lower() for x in (alert.get("labels") or [])]
+        if wanted_labels:
+            object_label = str(getattr(cross, "label", "object") or "object").lower()
+            if "line_cross" not in wanted_labels and object_label not in wanted_labels:
+                return False
+        # cooldown por línea (evita dobles eventos inmediatos)
+        key = cross.line_id
+        last = self._line_last.get(key, 0.0)
+        if last and (now - last) < float(cfg.get("line_cross_cooldown", 4) or 4):
+            return False
+        self._line_last[key] = now
+
+        track_box: list = []
+        for i, box in enumerate(boxes):
+            if i < len(labels) and labels[i] == cross.label:
+                track_box = list(box)
+                break
+        score = float(result.score or 0.0)
+        if cross.label != "object":
+            idx = labels.index(cross.label) if cross.label in labels else -1
+            if idx >= 0 and idx < len(confs) and confs[idx]:
+                # score global se expresa en porcentaje; para IA usamos confianza
+                score = round(max(score, float(confs[idx]) * 100.0), 2)
+        rel = self._save_snapshot(visible, [track_box] if track_box else [], "line_cross", lines=[line])
+        event = make_event(
+            self.camera,
+            "line_cross",
+            score,
+            [track_box],
+            snapshot_rel=rel,
+            meta={
+                "track_id": cross.track_id,
+                "label": cross.label,
+                "line_id": cross.line_id,
+                "line_name": cross.line_name or cross.line_id,
+                "direction": cross.direction,
+                "reason": "line_cross",
+            },
+        )
+        events_store.add(event)
+        self.status["events"] += 1
+        self.status["last_event_iso"] = event["ts"]
+        self.status["last_event"] = now
+        self._notify(event, rel)
+        return True
+
+    def _on_motion(
+        self, frame: np.ndarray, result, now: float,
+        snapshot_frame: Optional[np.ndarray] = None,
+        ai_hit: bool = False,
+        ai_boxes: Optional[list] = None,
+        ai_labels: Optional[list] = None,
+        ai_confs: Optional[list] = None,
+    ) -> None:
         det = self.camera.get("detection") or {}
         label = "motion"
         boxes = result.boxes
 
-        ai = self._ensure_ai()
-        if ai is not None:
-            self._ai_frame += 1
-            every_n = max(1, int(det.get("ai_every_n", 3) or 1))
-            hit, ai_boxes, ai_labels = ai.process(frame, every_n=every_n, counter=self._ai_frame)
-            if not hit:
+        if det.get("ai_enabled"):
+            if not ai_hit:
                 # con IA activa exigimos que confirme un objeto de interés
                 return
-            label = ai_labels[0] if ai_labels else "object"
-            boxes = ai_boxes
+            label = (ai_labels or ["object"])[0]
+            boxes = ai_boxes or []
 
         cooldown = float(det.get("cooldown_seconds", 20) or 0)
         last = self.status.get("last_event")
@@ -508,7 +672,8 @@ class CameraWorker(threading.Thread):
                 make_event(self.camera, "motion", 0.0, [], clip_rel=rel)
             )
 
-    def _save_snapshot(self, frame: np.ndarray, boxes, label: str) -> str:
+    def _save_snapshot(self, frame: np.ndarray, boxes, label: str,
+                       lines: Optional[list] = None) -> str:
         try:
             day = time.strftime("%Y%m%d")
             folder = snapshots_dir() / slugify(self.id) / day
@@ -516,6 +681,18 @@ class CameraWorker(threading.Thread):
             name = f"{time.strftime('%Y%m%dT%H%M%S')}_{label}.jpg"
             path = folder / name
             img = draw_boxes(frame.copy(), boxes)
+            if lines:
+                h, w = img.shape[:2]
+                for line in lines:
+                    p1 = line.get("p1") or []
+                    p2 = line.get("p2") or []
+                    if len(p1) >= 2 and len(p2) >= 2:
+                        cv2.line(
+                            img,
+                            (int(float(p1[0]) * w), int(float(p1[1]) * h)),
+                            (int(float(p2[0]) * w), int(float(p2[1]) * h)),
+                            (240, 80, 80), 2, cv2.LINE_AA,
+                        )
             cv2.imwrite(str(path), img, [int(cv2.IMWRITE_JPEG_QUALITY), SNAPSHOT_QUALITY])
             return str(path.resolve().relative_to(DATA_DIR.resolve()))
         except Exception as exc:
@@ -527,7 +704,13 @@ class CameraWorker(threading.Thread):
         if not alerts.get("enabled", True):
             return
         wanted_labels = [str(x).lower() for x in (alerts.get("labels") or [])]
-        if wanted_labels and str(event.get("label", "motion")).lower() not in wanted_labels:
+        meta = event.get("meta") or {}
+        event_labels = {
+            str(event.get("label", "motion")).lower(),
+            str(meta.get("label", "")).lower(),
+            str(meta.get("object_label", "")).lower(),
+        }
+        if wanted_labels and not event_labels.intersection(wanted_labels):
             return
         if not self._notify_throttled(time.time()):
             return
@@ -545,10 +728,18 @@ class CameraWorker(threading.Thread):
 
         image = DATA_DIR / snapshot_rel if snapshot_rel else None
         title = f"🎥 {self.camera.get('name', 'Cámara')}: {event['label']}"
+        meta = event.get("meta") or {}
         body = (
             f"{event['ts'].replace('T', ' ').replace('Z', '')}\n"
             f"Confianza: {event['score']}% de imagen en movimiento"
         )
+        if meta.get("line_name"):
+            body = (
+                f"{event['ts'].replace('T', ' ').replace('Z', '')}\n"
+                f"Línea {meta['line_name']}: {meta.get('label', 'objeto')} "
+                f"cruzó hacia {meta.get('direction', 'desconocido')}\n"
+                f"Objeto: {meta.get('track_id', '')} · confianza {event['score']}%"
+            )
         channels = alerts.get("channels") or None
         try:
             future = self.notifier.send_async(title, body, image, channels)

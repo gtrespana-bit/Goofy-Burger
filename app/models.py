@@ -140,6 +140,24 @@ class OverlayConfig(BaseModel):
     font_scale: float = 0.7
 
 
+class LineConfig(BaseModel):
+    id: str = ""
+    name: str = ""
+    enabled: bool = True
+    direction: Literal["both", "in", "out"] = "both"
+    p1: List[float] = Field(default_factory=lambda: [0.5, 0.0])
+    p2: List[float] = Field(default_factory=lambda: [0.5, 1.0])
+
+
+class AnalyticsConfig(BaseModel):
+    enabled: bool = True
+    tracking_enabled: bool = True
+    line_crossing_enabled: bool = True
+    lines: List[LineConfig] = Field(default_factory=list)
+    max_track_age: int = 12
+    line_cross_cooldown: int = 4
+
+
 class DetectionConfig(BaseModel):
     enabled: bool = True
     sensitivity: int = 55
@@ -161,6 +179,7 @@ class DetectionConfig(BaseModel):
     ai_model: str = "yolov8n.pt"
     ai_every_n: int = 3
     ai_imgsz: int = 640
+    analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
 
 
 class RecordingConfig(BaseModel):
@@ -304,7 +323,7 @@ class Event(BaseModel):
     camera_id: str
     camera_name: str = ""
     ts: str
-    label: str = "motion"        # motion | person | car | ...
+    label: str = "motion"        # motion | person | car | ... | line_cross
     score: float = 0.0
     boxes: List[List[int]] = Field(default_factory=list)
     snapshot: str = ""           # ruta relativa
@@ -312,6 +331,7 @@ class Event(BaseModel):
     notified: List[str] = Field(default_factory=list)
     acknowledged: bool = False
     notes: str = ""
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------

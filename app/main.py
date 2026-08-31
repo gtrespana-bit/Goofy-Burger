@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from . import logging_setup
 from .auth import require_auth, require_write
 from .config import DATA_DIR
+from .routers import analytics
 from .routers import auth as auth_router_mod
 from .routers import cameras, events, recordings, settings, stream, system
 from .services.manager import manager
@@ -57,7 +58,7 @@ app.add_middleware(
 app.include_router(auth_router_mod.router, prefix="/api")
 
 for router in (cameras.router, stream.router, recordings.router,
-               events.router, settings.router, system.router):
+               events.router, settings.router, system.router, analytics.router):
     app.include_router(
         router,
         prefix="/api",

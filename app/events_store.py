@@ -147,6 +147,7 @@ def make_event(
     boxes: List[List[int]],
     snapshot_rel: str = "",
     clip_rel: str = "",
+    meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     return {
         "id": f"evt_{utc_now().strftime('%Y%m%d%H%M%S')}_{os.urandom(3).hex()}",
@@ -161,4 +162,5 @@ def make_event(
         "notified": [],
         "acknowledged": False,
         "notes": "",
+        "meta": meta or {},
     }

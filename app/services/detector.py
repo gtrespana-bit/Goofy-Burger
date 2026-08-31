@@ -273,19 +273,19 @@ class AIDetector:
             self._load()
 
     def process(self, frame: np.ndarray, every_n: int = 3, counter: int = 0):
-        """Devuelve (hay_objetivo, boxes, labels). Se ejecuta cada `every_n` frames."""
+        """Devuelve (hay_objetivo, boxes, labels, confidences)."""
         if not self.available or self._model is None:
-            return False, [], []
+            return False, [], [], []
         if every_n > 1 and (counter % every_n) != 0:
-            return False, [], []
+            return False, [], [], []
         try:
             with self._lock:
                 results = self._model.predict(
                     frame, conf=self.conf, verbose=False, imgsz=self.imgsz
                 )
         except Exception:
-            return False, [], []
-        boxes, labels = [], []
+            return False, [], [], []
+        boxes, labels, confs = [], [], []
         for res in results:
             for box in getattr(res, "boxes", []):
                 cls_id = int(box.cls[0]) if box.cls is not None else -1
@@ -299,4 +299,8 @@ class AIDetector:
                 x1, y1, x2, y2 = [int(v) for v in box.xyxy[0].tolist()]
                 boxes.append([x1, y1, x2 - x1, y2 - y1])
                 labels.append(label)
-        return bool(boxes), boxes, labels
+                try:
+                    confs.append(round(float(box.conf[0]), 3))
+                except Exception:
+                    confs.append(0.0)
+        return bool(boxes), boxes, labels, confs

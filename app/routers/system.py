@@ -29,6 +29,8 @@ PREMIUM_FEATURES = [
     "Detección con zonas, máscaras de privacidad y anti-falsos positivos",
     "IA opcional (personas, vehículos, mascotas) con confianza y clases",
     "Detección de cámara tapada / manipulación",
+    "Seguimiento de objetos y cruce de líneas virtuales con IA",
+    "Informes semanales por cámara, día y tipo de evento",
     "Notificaciones Telegram, ntfy, webhook, Discord, Pushover y email",
     "Control PTZ y presets ONVIF",
     "Analítica de eventos y gestión de almacenamiento",
