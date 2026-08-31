@@ -250,6 +250,7 @@ tr:hover td{background:rgba(255,255,255,.02)}
 .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
 .tags .tag{font-size:11px;padding:2px 8px}
 .btn.muted{opacity:.55;color:var(--txt-faint)}
+.logview{background:#0a0d12;border:1px solid var(--bg-3);border-radius:8px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;color:#c9d1d9;max-height:320px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 @media (max-width:720px){
   .topbar{flex-wrap:wrap;gap:8px}
   .topstats{order:3;width:100%;justify-content:space-between}

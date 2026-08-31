@@ -10,7 +10,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel, Field
 
-SOURCE_TYPES = ("rtsp", "usb", "file", "demo")
+SOURCE_TYPES = ("rtsp", "dvrip", "usb", "file", "demo")
 
 
 def new_id(prefix: str = "") -> str:
@@ -130,6 +130,18 @@ class OnvifConfig(BaseModel):
     use_onvif_stream: bool = True
 
 
+class DvripConfig(BaseModel):
+    """Soporte nativo NetIP/DVRIP (puerto 34567) para iCSee/XMEye."""
+    enabled: bool = False
+    host: str = ""
+    port: int = 34567
+    channel: int = 0                       # canal 0-based del protocolo
+    stream: str = "main"                   # main | sub
+    codec: str = "auto"                    # auto | h264 | h265
+    title: str = ""
+    ptz_enabled: bool = False
+
+
 class OverlayConfig(BaseModel):
     """Marca de agua / información en la vista en directo y en instantáneas."""
     enabled: bool = False
@@ -214,8 +226,8 @@ class AlertConfig(BaseModel):
 class CameraBase(BaseModel):
     name: str
     enabled: bool = True
-    source_type: Literal["rtsp", "usb", "file", "demo"] = "rtsp"
-    url: str = ""             # rtsp://... | ruta de fichero | (demo: ignorado)
+    source_type: Literal["rtsp", "dvrip", "usb", "file", "demo"] = "rtsp"
+    url: str = ""             # rtsp://... | dvrip://... | ruta de fichero | (demo: ignorado)
     substream_url: str = ""   # opcional: flujo secundario para detección/live
     username: str = ""
     password: str = ""
@@ -229,6 +241,7 @@ class CameraBase(BaseModel):
     order: int = 0
     overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     onvif: OnvifConfig = Field(default_factory=OnvifConfig)
+    dvrip: DvripConfig = Field(default_factory=DvripConfig)
     detection: DetectionConfig = Field(default_factory=DetectionConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
     alerts: AlertConfig = Field(default_factory=AlertConfig)
@@ -258,6 +271,7 @@ class CameraUpdate(BaseModel):
     order: Optional[int] = None
     overlay: Optional[Dict[str, Any]] = None
     onvif: Optional[Dict[str, Any]] = None
+    dvrip: Optional[Dict[str, Any]] = None
     detection: Optional[Dict[str, Any]] = None
     recording: Optional[Dict[str, Any]] = None
     alerts: Optional[Dict[str, Any]] = None
@@ -301,6 +315,7 @@ def build_camera(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str,
         "order": int(payload.get("order", 0) or 0),
         "overlay": {**OverlayConfig().model_dump(), **(payload.get("overlay") or {})},
         "onvif": {**OnvifConfig().model_dump(), **(payload.get("onvif") or {})},
+        "dvrip": {**DvripConfig().model_dump(), **(payload.get("dvrip") or {})},
         "detection": {**DetectionConfig().model_dump(), **det, **(payload.get("detection") or {})},
         "recording": {**RecordingConfig().model_dump(), **rec, **(payload.get("recording") or {})},
         "alerts": {**AlertConfig().model_dump(), **(payload.get("alerts") or {})},

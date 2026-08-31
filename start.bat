@@ -9,7 +9,7 @@ if not exist ".venv" (
 
 call .venv\Scripts\activate.bat
 
-python -c "import fastapi, uvicorn, cv2, requests, onvif, imageio_ffmpeg" >nul 2>&1
+python -c "import fastapi, uvicorn, cv2, requests, onvif, imageio_ffmpeg, dvrip, pywebpush" >nul 2>&1
 if errorlevel 1 (
     echo Instalando dependencias (incluye ONVIF y ffmpeg)...
     python -m pip install --upgrade pip

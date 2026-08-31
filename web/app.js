@@ -292,6 +292,11 @@ async function startApp() {
   try {
     $('#btn-add').onclick = () => cameraWizard();
     $('#btn-refresh').onclick = () => refresh(true);
+    const diagBtn = $('#btn-diagnose');
+    if (diagBtn) {
+      diagBtn.style.display = '';
+      diagBtn.onclick = () => showDiagnostics();
+    }
     $('#btn-away').onclick = async () => {
       const away = !state.settings.general?.away;
       await api('/system/away', { method: 'POST', body: { value: away } });
@@ -463,6 +468,80 @@ function renderTopbar() {
   }
   const install = $('#btn-install');
   if (install && !state.installPrompt) install.style.display = 'none';
+  const dbg = $('#btn-diagnose');
+  if (dbg) {
+    const errCount = cams.filter(c => c.health?.last_error).length;
+    dbg.textContent = errCount ? `🩺 ${errCount}` : '🩺';
+    dbg.classList.toggle('muted', !errCount);
+    dbg.title = errCount ? `${errCount} cámara(s) con error. Clic para ver el detalle.` : 'Diagnóstico y errores';
+  }
+}
+
+async function showDiagnostics() {
+  openModal('🩺 Diagnóstico y errores', '<div class="muted"><span class="spinner"></span> Leyendo logs y dependencias…</div>', { wide: true });
+  try {
+    const d = await api('/system/diagnostics');
+    const body = $('#modal-body');
+    const depRow = (name, ok, detail = '') => `<tr><td>${esc(name)}</td><td style="color:${ok ? 'var(--ok,#3ddc97)' : 'var(--warn,#ffb454)'}">${ok ? '✓' : '⚠'}</td><td class="muted">${esc(detail || '')}</td></tr>`;
+    const camRows = (d.cameras || []).map(c => `<tr>
+        <td><b>${esc(c.name)}</b><div class="muted">${esc(c.source_type || '')}</div></td>
+        <td><span class="badge state ${esc(c.state)}">${esc(c.state || '')}</span></td>
+        <td>${esc(c.last_error || '—')}</td>
+        <td>${c.reconnects || 0}</td>
+      </tr>`).join('') || '<tr><td colspan="4" class="muted">Sin cámaras.</td></tr>';
+    const logLines = (d.log_tail || []).map(l => esc(l)).join('\n') || '(sin líneas)';
+    body.innerHTML = `
+      <div class="form-grid" style="grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px">
+        <div class="item"><b>Carpeta de datos</b><div class="meta">${esc(d.data_dir)}</div><div class="meta">${d.data_dir_writable ? '✓ escribible' : '⚠ no escribible'}</div></div>
+        <div class="item"><b>ffmpeg</b><div class="meta">${d.ffmpeg ? '✓ ' + esc(d.ffmpeg) : '⚠ no encontrado (usará imageio si está instalado)'}</div></div>
+        <div class="item"><b>ONVIF</b><div class="meta">${d.onvif_available ? '✓' : '⚠ ' + esc(d.onvif_hint || 'no instalado')}</div></div>
+        <div class="item"><b>DVRIP/NetIP</b><div class="meta">${d.dvrip_available ? '✓ soporte iCSee multi-lente' : '⚠ ' + esc(d.dvrip_hint || 'no instalado')}</div></div>
+        <div class="item"><b>Web Push</b><div class="meta">${d.pywebpush_available ? '✓' : '⚠ ' + esc(d.pywebpush_hint || 'no instalado')}</div></div>
+        <div class="item"><b>IA YOLO</b><div class="meta">${d.ai_available ? '✓' : '⚠ opcional, no instalada'}</div></div>
+      </div>
+      <div class="divider"></div>
+      <h4>Estado y errores de cámaras</h4>
+      <table><tr><th>Cámara</th><th>Estado</th><th>Último error</th><th>Reconex.</th></tr>${camRows}</table>
+      <div class="divider"></div>
+      <div class="row" style="justify-content:space-between">
+        <h4 style="margin:0">Log ${esc(d.version || '')}</h4>
+        <div class="row" style="gap:6px">
+          <button class="btn sm" id="diag-refresh">⟳ Refrescar</button>
+          <button class="btn sm" id="diag-copy">📋 Copiar resumen</button>
+          <button class="btn sm" id="diag-download">⬇ Descargar vigia.log</button>
+        </div>
+      </div>
+      <pre class="logview">${logLines}</pre>
+      ${(d.startup_error_tail || []).length ? `<details style="margin-top:8px"><summary>Errores de arranque (startup_error.log)</summary><pre class="logview">${(d.startup_error_tail || []).map(esc).join('\n')}</pre></details>` : ''}`;
+    $('#diag-refresh').onclick = () => showDiagnostics();
+    $('#diag-copy').onclick = async () => {
+      try {
+        const summary = {
+          version: d.version, python: d.python, platform: d.platform,
+          data_dir: d.data_dir, data_dir_writable: d.data_dir_writable,
+          ffmpeg: d.ffmpeg, opencv: d.opencv,
+          onvif: d.onvif_available, dvrip: d.dvrip_available,
+          pywebpush: d.pywebpush_available, ai: d.ai_available,
+          cameras: (d.cameras || []).map(c => ({ name: c.name, state: c.state, last_error: c.last_error, reconnects: c.reconnects })),
+          errors: d.errors, log_tail: (d.log_tail || []).slice(-40),
+        };
+        await navigator.clipboard.writeText(JSON.stringify(summary, null, 2));
+        toast('Resumen de diagnóstico copiado al portapapeles');
+      } catch { toast('No se pudo copiar', 'err'); }
+    };
+    $('#diag-download').onclick = async () => {
+      try {
+        const r = await api('/system/logs/tail?file=vigia.log&lines=5000');
+        const blob = new Blob([(r.lines || []).join('\n')], { type: 'text/plain;charset=utf-8' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `vigia-${todayStr()}.log`;
+        a.click();
+      } catch (e) { toast(e.message || 'No se pudo descargar', 'err'); }
+    };
+  } catch (e) {
+    $('#modal-body').innerHTML = `<div class="muted">No se pudo leer el diagnóstico: ${esc(e.message)}</div>`;
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1765,6 +1844,7 @@ async function renderSettings() {
         <ul>${(info.features || []).map(f => `<li>${esc(f)}</li>`).join('')}</ul>
       </details>
       <div class="row" style="margin-top:12px">
+        <button class="btn primary" id="diag-open">🩺 Diagnóstico y errores</button>
         <button class="btn" id="sys-export">Exportar configuración</button>
         <button class="btn ghost" id="sys-reload">Recargar del disco</button>
       </div>
@@ -2049,6 +2129,7 @@ async function renderSettings() {
     refresh(true);
   };
 
+  $('#diag-open').onclick = () => showDiagnostics();
   $('#sys-export').onclick = async () => {
     const data = await api('/settings/export', { method: 'POST', body: {} });
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -2150,6 +2231,7 @@ function cameraWizard() {
       <label>Tipo de cámara</label>
       <select id="w-type">
         <option value="rtsp">Cámara IP por RTSP (Reolink, Hikvision, Amcrest, Dahua, iCSee/XMEye…)</option>
+        <option value="dvrip">iCSee/XMEye multi-lente por DVRIP (puerto 34567)</option>
         <option value="usb">Webcam USB / cámara del portátil</option>
         <option value="file">Fichero de vídeo (para pruebas)</option>
         <option value="demo">Cámara de demostración (sin hardware)</option>
@@ -2162,6 +2244,7 @@ function cameraWizard() {
         <div class="row">
           <button class="btn sm" id="w-dis-onvif">Buscar (ONVIF)</button>
           <button class="btn sm" id="w-dis-scan">Escanear red</button>
+          <button class="btn sm" id="w-dis-dvrip">Buscar (DVRIP)</button>
         </div>
       </div>
       <div class="row" style="margin-top:8px">
@@ -2185,6 +2268,18 @@ function cameraWizard() {
         <input id="w-sub" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/102"></div>
       <div class="field w-rtsp"><label>Usuario</label><input id="w-user"></div>
       <div class="field w-rtsp"><label>Contraseña</label><input type="password" id="w-pass"></div>
+      <div class="field w-dvrip" style="display:none"><label>Host / IP DVRIP</label>
+        <input id="w-dv-host" placeholder="192.168.0.108"></div>
+      <div class="field w-dvrip" style="display:none"><label>Puerto NetIP</label>
+        <input type="number" id="w-dv-port" value="34567"></div>
+      <div class="field w-dvrip" style="display:none"><label>Canal (lente)</label>
+        <input type="number" id="w-dv-channel" value="0" min="0"></div>
+      <div class="field w-dvrip" style="display:none"><label>Flujo</label>
+        <select id="w-dv-stream"><option value="main" selected>Principal</option><option value="sub">Secundario</option></select></div>
+      <div class="field w-dvrip" style="display:none"><label>Códec</label>
+        <select id="w-dv-codec"><option value="auto" selected>Auto (H.264)</option><option value="h265">H.265</option></select></div>
+      <div class="field w-dvrip" style="display:none"><label>Usuario</label><input id="w-dv-user"></div>
+      <div class="field w-dvrip" style="display:none"><label>Contraseña</label><input type="password" id="w-dv-pass"></div>
       <div class="field w-usb" style="display:none"><label>Índice de dispositivo</label>
         <input type="number" id="w-index" value="0" min="0"></div>
       <div class="field w-usb" style="display:none"><label>Nombre del dispositivo (Windows/macOS, opcional)</label>
@@ -2217,9 +2312,10 @@ function cameraWizard() {
   const syncType = () => {
     const t = typeSel.value;
     $$('.w-rtsp').forEach(e => e.style.display = t === 'rtsp' ? '' : 'none');
+    $$('.w-dvrip').forEach(e => e.style.display = t === 'dvrip' ? '' : 'none');
     $$('.w-usb').forEach(e => e.style.display = t === 'usb' ? '' : 'none');
     $$('.w-file').forEach(e => e.style.display = t === 'file' ? '' : 'none');
-    $('#w-discover-box').style.display = t === 'rtsp' ? '' : 'none';
+    $('#w-discover-box').style.display = (t === 'rtsp' || t === 'dvrip') ? '' : 'none';
   };
   typeSel.onchange = syncType; syncType();
 
@@ -2322,6 +2418,66 @@ function cameraWizard() {
     }
   }
 
+  // Añade una cámara por cada lente detectada por DVRIP/NetIP (puerto 34567).
+  // Es la vía fiable para iCSee 3-en-1 donde RTSP channel=1/2/3 NO cambia de
+  // lente. Cada lente se crea como cámara independiente con source dvrip.
+  async function addAllDvrip(host, user, pass, lenses, onvifInfo = null) {
+    const base = $('#w-name').value.trim() || 'Cámara';
+    const grp = $('#w-group').value.trim() || 'General';
+    const ov = onvifInfo || {};
+    const ptzProfile = (ov.profiles || []).find(p => p.has_ptz) || (ov.profiles || [])[0];
+    const ptzIndex = ptzProfile ? (ov.profiles || []).indexOf(ptzProfile) : (ov.has_ptz ? 0 : -1);
+    let added = 0;
+    for (const lens of lenses || []) {
+      const index = +lens.index || 0;
+      const label = lens.label || `Lente ${index + 1}`;
+      const profile = (ov.profiles || [])[index];
+      const isPtz = (ov.profiles || []).length
+        ? !!(profile?.has_ptz || (ptzProfile && index === ptzIndex))
+        : (ov.has_ptz && index === ptzIndex);
+      const payload = {
+        name: `${base} · ${label}`,
+        group: grp,
+        source_type: 'dvrip',
+        url: `dvrip://${host}:${ov.port || 34567}/channel=${index + 1}`,
+        username: user || '',
+        password: pass || '',
+        dvrip: {
+          enabled: true,
+          host,
+          port: +($('#w-dv-port').value || ov.port || 34567),
+          channel: index,
+          stream: 'main',
+          codec: 'auto',
+          title: label,
+          ptz_enabled: isPtz,
+        },
+        recording: { mode: 'motion', quality: 'medium' },
+      };
+      if (ov.port || profile?.token) {
+        payload.onvif = {
+          enabled: isPtz,
+          host,
+          port: +ov.port || 8899,
+          username: ov.username || user || '',
+          password: ov.password ? pass || '' : '',
+          profile_token: isPtz ? (profile?.token || ptzProfile?.token || '') : '',
+          use_onvif_stream: false,
+        };
+      }
+      try {
+        await api('/cameras', { method: 'POST', body: payload });
+        added++;
+      } catch (e) { toast(`${label}: ${e.message}`, 'err'); }
+    }
+    if (added) {
+      toast(`${added} lente(s) añadidas vía DVRIP${ov.port ? ' · PTZ en lente giratoria.' : ''}`);
+      closeModal();
+      await refresh(true);
+      location.hash = '#/dashboard';
+    }
+  }
+
   async function discover(mode, target = '') {
     const box = $('#w-dis-results');
     box.innerHTML = '<div class="muted"><span class="spinner"></span> Buscando dispositivos…</div>';
@@ -2371,15 +2527,19 @@ function cameraWizard() {
         const addBtn = $('#w-add-channels', box);
         if (addBtn) addBtn.onclick = () => addAllChannels(groups);
       } else {
-        box.innerHTML = (data.devices || []).map(d => `
+        const dvWarn = mode === 'dvrip' && data.available === false
+          ? '<div class="item"><div class="grow"><div class="title" style="color:var(--warn,#ffb454)">DVRIP no disponible</div><div class="meta">Instala la librería <code>dvrip</code> (pip install dvrip) para enumerar lentes iCSee por el puerto 34567.</div></div></div>'
+          : '';
+        box.innerHTML = dvWarn + (data.devices || []).map(d => `
           <div class="item"><div class="grow">
               <div class="title">${esc(d.name || d.ip)}</div>
               <div class="meta"><span>${esc(d.ip)}</span>${(d.ports || []).length ? `<span>puertos ${esc((d.ports || []).join(','))}</span>` : ''}
-              ${d.hardware ? `<span>${esc(d.hardware)}</span>` : ''}</div>
+              ${d.hardware ? `<span>${esc(d.hardware)}</span>` : ''}
+              ${d.channels ? `<span>DVRIP · ${esc(d.channels)} canal(es)</span>` : ''}</div>
               ${(d.rtsp_candidates || []).map(u => `<div class="meta" style="margin-top:4px"><button class="btn sm" data-url="${esc(u)}">${esc(u)}</button></div>`).join('')}
             </div>
             <button class="btn sm" data-probe="${esc(d.ip)}">Sondear RTSP</button>
-            <button class="btn sm" data-diag="${esc(d.ip)}">Lentes iCSee</button>
+            <button class="btn sm primary" data-diag="${esc(d.ip)}">Lentes iCSee</button>
           </div>`).join('') || '<div class="muted">No se han encontrado dispositivos.</div>';
       }
       $$('[data-url]', box).forEach(b => b.onclick = () => {
@@ -2412,6 +2572,7 @@ function cameraWizard() {
   }
   $('#w-dis-onvif').onclick = () => discover('onvif');
   $('#w-dis-scan').onclick = () => discover('scan');
+  $('#w-dis-dvrip').onclick = () => discover('dvrip');
 
   // Añade una cámara por cada perfil ONVIF (cada lente de una multi-lente).
   async function addAllOnvif(host, user, pass, profiles, port = 8899) {
@@ -2476,6 +2637,29 @@ function cameraWizard() {
 
       // Canales RTSP agrupados: para las iCSee/XMEye multi-lente es la forma
       // más clara de ver "Lente 1, Lente 2, Lente 3" y añadirlas de una vez.
+      // DVRIP/NetIP (puerto 34567): la vía fiable para iCSee multi-lente cuando
+      // RTSP no expone todas las lentes. Se muestran como Lente 1/2/3 y se pueden
+      // añadir todas de golpe.
+      const dv = r.dvrip;
+      const dvUser = dv && dv.login_ok ? (dv.username || $('#w-dis-user').value || '') : '';
+      const dvPass = dv && dv.login_ok ? (dv.password_present ? $('#w-dis-pass').value : '') : '';
+      if (dv && dv.login_ok && dv.lenses && dv.lenses.length) {
+        const ovInfo = r.onvif_profiles && r.onvif_profiles.profiles ? r.onvif_profiles : null;
+        const hasPtz = !!(ovInfo && (ovInfo.has_ptz || ovInfo.profiles.some(p => p.has_ptz)));
+        html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
+          <div class="grow">
+            <div class="title">📷 iCSee multi-lente vía DVRIP/NetIP: ${dv.channels} lente(s)</div>
+            <div class="meta">Puerto 34567 · ${esc(dv.device?.hardware || '')} ${esc(dv.device?.software || '')} · ${hasPtz ? 'una lente con PTZ.' : 'PTZ vía ONVIF no detectado.'}</div>
+          </div>
+          <button class="btn sm primary" id="w-add-dvrip">➕ Añadir los ${dv.lenses.length}</button>
+        </div>`;
+        html += dv.lenses.map(l => `<div class="item"><div class="grow">
+          <div class="title" style="font-size:12px">${esc(l.label)}${l.recording ? ' · grabando' : ''}${(ovInfo && (ovInfo.profiles[+l.index]?.has_ptz)) ? '<span style="color:var(--accent,#3ddc97)"> · PTZ</span>' : ''}</div>
+          <div class="meta" style="font-size:11px">Canal DVRIP ${+l.index} · ${l.bitrate_kbps} kbit/s</div>
+        </div>
+        <button class="btn sm" data-dvrip-use="${esc(l.index)}">Usar</button></div>`).join('');
+      }
+
       const channels = r.channels && r.channels.groups ? r.channels : null;
       const groups = channels ? channels.groups : [];
       const lensGroups = groups.filter(g => !g.mosaic);
@@ -2547,6 +2731,43 @@ function cameraWizard() {
         host: ip,
         password: onvifPass(),
       }) : null;
+      const addDv = $('#w-add-dvrip', box);
+      if (addDv) {
+        const dv = r.dvrip;
+        addDv.onclick = () => addAllDvrip(
+          ip, dvUser, dvPass, dv.lenses,
+          r.onvif_profiles && r.onvif_profiles.profiles ? { ...r.onvif_profiles, password: !!r.onvif_profiles.password } : null
+        );
+      }
+      $$('[data-dvrip-use]', box).forEach(b => {
+        b.onclick = () => {
+          const idx = +b.dataset.dvripUse;
+          const lens = (r.dvrip?.lenses || []).find(l => +l.index === idx) || { index: idx, label: `Lente ${idx + 1}` };
+          $('#w-type').value = 'dvrip';
+          syncType();
+          $('#w-dv-host').value = ip;
+          $('#w-dv-port').value = 34567;
+          $('#w-dv-channel').value = idx;
+          $('#w-dv-stream').value = 'main';
+          $('#w-dv-codec').value = 'auto';
+          $('#w-dv-user').value = dvUser;
+          $('#w-dv-pass').value = dvPass;
+          $('#w-name').value = $('#w-name').value.trim() ? $('#w-name').value.trim() + ' · ' + lens.label : lens.label;
+          const ovP = (r.onvif_profiles?.profiles || [])[idx];
+          const ovHasPtz = !!(ovP?.has_ptz || (r.onvif_profiles?.has_ptz && idx === 0));
+          if (r.onvif_profiles && (ovP || r.onvif_profiles.has_ptz)) {
+            $('#w-onvif').checked = ovHasPtz;
+            $('#w-onvif-box').style.display = ovHasPtz ? '' : 'none';
+            $('#w-ov-host').value = ip;
+            $('#w-ov-port').value = r.onvif_profiles?.port || 8899;
+            $('#w-ov-user').value = r.onvif_profiles?.username || dvUser;
+            $('#w-ov-pass').value = r.onvif_profiles?.password ? dvPass : '';
+            $('#w-ov-token').value = ovHasPtz ? (ovP?.token || r.onvif_profiles?.ptz_profile_token || '') : '';
+          }
+          toast(`Lente ${idx + 1} puesta en el formulario (DVRIP)`);
+        };
+      });
+
       const addCh = $('#w-add-channels', box);
       if (addCh) addCh.onclick = () => addAllChannels(groups, channelInfo);
 
@@ -2639,6 +2860,26 @@ function cameraWizard() {
     let sub = t === 'rtsp' ? $('#w-sub').value.trim() : '';
     let user = t === 'rtsp' ? $('#w-user').value : '';
     let pass = t === 'rtsp' ? $('#w-pass').value : '';
+    let dvripCfg = null;
+
+    if (t === 'dvrip') {
+      const host = $('#w-dv-host').value.trim();
+      const port = +$('#w-dv-port').value || 34567;
+      const channel = +$('#w-dv-channel').value || 0;
+      user = $('#w-dv-user').value;
+      pass = $('#w-dv-pass').value;
+      url = host ? `dvrip://${host}:${port}/channel=${channel + 1}` : '';
+      dvripCfg = {
+        enabled: !!host,
+        host,
+        port,
+        channel,
+        stream: $('#w-dv-stream').value,
+        codec: $('#w-dv-codec').value,
+        title: $('#w-name').value.trim(),
+        ptz_enabled: !!$('#w-onvif').checked,
+      };
+    }
 
     // Para iCSee/XMEye las credenciales suelen venir dentro de la URL. Si el
     // usuario las dejó ahí y el formulario está vacío, las extraemos para
@@ -2663,11 +2904,12 @@ function cameraWizard() {
       source_type: t,
       url,
       substream_url: sub,
-      username: t === 'rtsp' ? user : '',
-      password: t === 'rtsp' ? pass : '',
+      username: t === 'rtsp' || t === 'dvrip' ? user : '',
+      password: t === 'rtsp' || t === 'dvrip' ? pass : '',
       device_index: t === 'usb' ? +$('#w-index').value : 0,
       device_name: t === 'usb' ? $('#w-devname').value.trim() : '',
     };
+    if (dvripCfg) payload.dvrip = dvripCfg;
     if (!$('#w-onvif').checked) return payload;
     return {
       ...payload,
@@ -2694,6 +2936,8 @@ async function cameraSettings(id) {
   const alerts = cam.alerts || {};
   const ov = cam.overlay || {};
   const isRtsp = cam.source_type === 'rtsp';
+  const isDvrip = cam.source_type === 'dvrip';
+  const camDvrip = cam.dvrip || {};
   const qualityOpts = ['high', 'medium', 'low', 'custom'];
   const presetOpts = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium'];
   openModal(`Ajustes · ${cam.name}`, `
@@ -2706,12 +2950,22 @@ async function cameraSettings(id) {
       <div class="field"><label>Orden en panel</label><input type="number" id="c-order" value="${cam.order || 0}"></div>
       <div class="field"><label>Tipo</label>
         <select id="c-type" disabled>
-          ${['rtsp', 'usb', 'file', 'demo'].map(t => `<option value="${t}" ${cam.source_type === t ? 'selected' : ''}>${t.toUpperCase()}</option>`).join('')}
+          ${['rtsp', 'dvrip', 'usb', 'file', 'demo'].map(t => `<option value="${t}" ${cam.source_type === t ? 'selected' : ''}>${t.toUpperCase()}</option>`).join('')}
         </select></div>
       ${isRtsp ? `<div class="field"><label>URL principal</label><input id="c-url" value="${esc(cam.url || '')}"></div>
       <div class="field"><label>URL secundaria</label><input id="c-sub" value="${esc(cam.substream_url || '')}"></div>
       <div class="field"><label>Usuario</label><input id="c-user" value="${esc(cam.username || '')}"></div>
       <div class="field"><label>Contraseña</label><input type="password" id="c-pass" value="${esc(cam.password || '')}"></div>` : ''}
+      ${isDvrip ? `<div class="field"><label>Host DVRIP</label><input id="c-dv-host" value="${esc(cam.dvrip?.host || '')}"></div>
+      <div class="field"><label>Puerto</label><input type="number" id="c-dv-port" value="${cam.dvrip?.port || 34567}"></div>
+      <div class="field"><label>Canal (lente)</label><input type="number" min="0" id="c-dv-channel" value="${cam.dvrip?.channel ?? 0}"></div>
+      <div class="field"><label>Códec</label><select id="c-dv-codec">
+        <option value="auto" ${(cam.dvrip?.codec || 'auto') === 'auto' ? 'selected' : ''}>Auto (H.264)</option>
+        <option value="h265" ${cam.dvrip?.codec === 'h265' ? 'selected' : ''}>H.265</option>
+      </select></div>
+      <div class="field"><label>Usuario</label><input id="c-dv-user" value="${esc(cam.username || '')}"></div>
+      <div class="field"><label>Contraseña</label><input type="password" id="c-dv-pass" value="${esc(cam.password || '')}"></div>
+      <div class="field grid-span2"><span class="hint">Grabación: usa <b>sólo movimiento</b> o <b>inteligente (clips)</b> para esta fuente DVRIP, porque el flujo continuo por ffmpeg no se puede copiar directamente.</span></div>` : ''}
       <div class="field grid-span2"><label>Notas</label><input id="c-notes" value="${esc(cam.notes || '')}" placeholder="Texto libre..."></div>
     </div>
 
@@ -2833,6 +3087,30 @@ async function cameraSettings(id) {
     if ($('#c-url')) payload.url = url;
     if ($('#c-sub')) payload.substream_url = sub;
     if ($('#c-user')) { payload.username = user; payload.password = pass; }
+    if ($('#c-dv-host')) {
+      const dvHost = $('#c-dv-host').value.trim();
+      const dvPort = +$('#c-dv-port').value || 34567;
+      const dvChannel = +$('#c-dv-channel').value || 0;
+      user = $('#c-dv-user').value;
+      pass = $('#c-dv-pass').value;
+      payload.username = user;
+      payload.password = pass;
+      payload.url = dvHost ? `dvrip://${dvHost}:${dvPort}/channel=${dvChannel + 1}` : (cam.url || '');
+      payload.dvrip = {
+        enabled: !!dvHost,
+        host: dvHost,
+        port: dvPort,
+        channel: dvChannel,
+        stream: 'main',
+        codec: $('#c-dv-codec').value,
+        title: cam.dvrip?.title || '',
+        ptz_enabled: !!camDvrip.ptz_enabled,
+      };
+    }
+    if (isDvrip && !['motion', 'smart'].includes($('#c-rec-mode').value)) {
+      // El flujo DVRIP no se puede copiar por ffmpeg: forzamos clips por evento.
+      $('#c-rec-mode').value = 'motion';
+    }
     payload.recording = {
       mode: $('#c-rec-mode').value,
       quality: $('#c-rec-quality').value,

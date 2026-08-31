@@ -27,6 +27,7 @@ hiddenimports += ["app", "app.main", "app.main:app"]
 hiddenimports += collect_submodules("webview")
 hiddenimports += collect_submodules("onvif")
 hiddenimports += collect_submodules("zeep")
+hiddenimports += collect_submodules("dvrip")
 hiddenimports += ["imageio_ffmpeg", "imageio_ffmpeg.binaries", "imageio_ffmpeg._utils"]
 # zeep/lxml a veces necesitan estos ocultos en entornos Windows
 hiddenimports += [

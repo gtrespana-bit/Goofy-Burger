@@ -8,6 +8,7 @@ empaquetar en un **.exe autocontenido** y en un **instalador de Windows**.
 
 - Python + todas las dependencias (FastAPI, OpenCV…)
 - **ONVIF (`onvif-zeep`)** para detectar todas las lentes y controlar el PTZ
+- **DVRIP (`dvrip`)** para enumerar/abrir lentes iCSee/XMEye por el puerto 34567
 - **ffmpeg (`imageio-ffmpeg`)** para grabar sin instalar nada más
 - La interfaz web y el icono
 

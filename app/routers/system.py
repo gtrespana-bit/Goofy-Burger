@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import platform
+import re
 import sys
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import cv2
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 
-from ..config import config
-from ..services import discovery, onvif_client
+from ..config import DATA_DIR, config
+from ..services import discovery, dvrip, onvif_client, pusher
 from ..services.capture import list_usb_devices
 from ..services.manager import manager
 from ..services.recorder import ffmpeg_path
@@ -34,10 +38,49 @@ PREMIUM_FEATURES = [
     "Notificaciones Telegram, ntfy, webhook, Discord, Pushover y email",
     "Push real al móvil (Web Push) y alarma sonora en pantalla",
     "Control PTZ y presets ONVIF",
+    "Soporte nativo DVRIP/NetIP (iCSee multi-lente por 34567)",
     "Analítica de eventos y gestión de almacenamiento",
     "Exportación/importación de configuración y autenticación Basic",
     "Ventana propia de escritorio (Windows) y acceso desde la LAN",
 ]
+
+
+def _safe_log_lines(path: Path, lines: int = 250) -> List[str]:
+    """Lee las últimas líneas de un log, con sanitizado de credenciales."""
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return [f"<no se pudo leer {path.name}: {exc}>"]
+    text = data[-max(1, int(lines)) * 6000:] if data else ""
+    out = text.splitlines()[-max(1, int(lines)):]
+    sanitized = []
+    for line in out:
+        line = re.sub(r"(rtsp://)[^/@\s]+@", r"\1***:***@", line)
+        line = re.sub(r"(user=)[^&\s/]+", r"\1***", line)
+        line = re.sub(r"((?:password|passwd)=)[^&\s/]+", r"\1***", line)
+        line = re.sub(r"(bearer\s+)[^\s]+", r"\1***", line, flags=re.I)
+        line = re.sub(r"(x-api-key[:\s]+)[^\s]+", r"\1***", line, flags=re.I)
+        sanitized.append(line)
+    return sanitized
+
+
+def _log_files() -> List[dict]:
+    log_dir = DATA_DIR / "logs"
+    out: List[dict] = []
+    try:
+        for p in sorted(log_dir.glob("*.log*")):
+            try:
+                st = p.stat()
+                out.append({
+                    "name": p.name,
+                    "size": int(st.st_size),
+                    "modified": int(st.st_mtime),
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
 
 
 def _ultralytics_available() -> bool:
@@ -64,6 +107,8 @@ def info():
         "opencv": cv2.__version__,
         "onvif_available": onvif_client.ONVIF_AVAILABLE,
         "onvif_hint": onvif_client.ONVIF_IMPORT_ERROR,
+        "dvrip_available": dvrip.available(),
+        "dvrip_hint": dvrip.DVRIP_ERROR,
         "ai_available": _ultralytics_available(),
         "auth_enabled": bool(config.data.get("general", {}).get("auth_enabled")),
         "away": bool(config.data.get("general", {}).get("away")),
@@ -331,6 +376,17 @@ def usb_devices():
     return {"devices": list_usb_devices()}
 
 
+@router.post("/dvrip/discover")
+def dvrip_discover(timeout: float = Query(2.5, ge=1, le=15)):
+    """Descubre cámaras iCSee/XMEye por DVRIP broadcast (UDP 34569)."""
+    try:
+        devices = dvrip.discover(timeout=max(1.0, float(timeout)))
+        return {"mode": "dvrip", "devices": devices,
+                "available": dvrip.available()}
+    except Exception as exc:
+        raise HTTPException(500, f"{type(exc).__name__}: {exc}")
+
+
 @router.post("/away")
 def set_away(value: bool = Body(True, embed=True)):
     """Modo 'fuera de casa': habilita las alertas marcadas como only_when_away."""
@@ -351,4 +407,102 @@ def health():
         "ok": True,
         "uptime": int(time.time() - START_TIME),
         "cameras": statuses,
+    }
+
+
+@router.get("/logs")
+def logs():
+    log_dir = DATA_DIR / "logs"
+    return {"dir": str(log_dir), "files": _log_files()}
+
+
+@router.get("/logs/tail")
+def logs_tail(file: str = Query("vigia.log"), lines: int = Query(200, ge=1, le=1200)):
+    if not file or Path(file).name != file:
+        raise HTTPException(400, "Nombre de fichero inválido")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", file):
+        raise HTTPException(400, "Nombre de fichero inválido")
+    path = DATA_DIR / "logs" / file
+    if not path.exists():
+        raise HTTPException(404, "No existe ese log")
+    return {"file": file, "path": str(path), "lines": _safe_log_lines(path, lines)}
+
+
+@router.get("/diagnostics")
+def diagnostics():
+    """Todo lo necesario para diagnosticar instalación y funcionamiento."""
+    data_dir_ok = False
+    try:
+        (DATA_DIR / "logs").mkdir(parents=True, exist_ok=True)
+        probe = DATA_DIR / "logs" / ".write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        data_dir_ok = True
+    except Exception:
+        pass
+
+    cam_health = []
+    errors = []
+    for cam in config.cameras():
+        st = manager.status(cam["id"])
+        cid = cam["id"]
+        cam_health.append({
+            "id": cid,
+            "name": cam.get("name"),
+            "source_type": cam.get("source_type"),
+            "enabled": cam.get("enabled", True),
+            "state": st.get("state"),
+            "last_error": st.get("last_error", ""),
+            "reconnects": st.get("reconnects", 0),
+            "fps": st.get("fps", 0.0),
+            "frame_age": st.get("frame_age", 0.0),
+        })
+        if st.get("last_error"):
+            errors.append({
+                "camera_id": cid,
+                "name": cam.get("name"),
+                "source": "worker",
+                "message": st.get("last_error", ""),
+            })
+    try:
+        log_dir = DATA_DIR / "logs"
+        main_log = log_dir / "vigia.log"
+        boot_log = log_dir / "startup_error.log"
+        log_tail = _safe_log_lines(main_log, 120) if main_log.exists() else []
+        boot_tail = _safe_log_lines(boot_log, 40) if boot_log.exists() else []
+    except Exception as exc:
+        log_tail = [f"<no se pudo leer el log: {exc}>"]
+        boot_tail = []
+
+    try:
+        push_ok = pusher.available()
+        push_error = pusher.PUSH_ERROR
+    except Exception as exc:
+        push_ok = False
+        push_error = str(exc)
+
+    return {
+        "ok": True,
+        "version": VERSION,
+        "python": sys.version.split()[0],
+        "platform": f"{platform.system()} {platform.release()}",
+        "hostname": platform.node(),
+        "ffmpeg": ffmpeg_path() or None,
+        "opencv": cv2.__version__,
+        "onvif_available": onvif_client.ONVIF_AVAILABLE,
+        "onvif_hint": onvif_client.ONVIF_IMPORT_ERROR,
+        "dvrip_available": dvrip.available(),
+        "dvrip_hint": dvrip.DVRIP_ERROR,
+        "pywebpush_available": push_ok,
+        "pywebpush_hint": push_error,
+        "ai_available": _ultralytics_available(),
+        "data_dir": str(DATA_DIR),
+        "data_dir_writable": data_dir_ok,
+        "cameras": cam_health,
+        "errors": errors,
+        "logs_dir": str(DATA_DIR / "logs"),
+        "log_files": _log_files(),
+        "log_tail": log_tail,
+        "startup_error_tail": boot_tail,
+        "storage": storage_stats(),
     }

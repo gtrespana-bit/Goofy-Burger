@@ -20,6 +20,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
+from . import dvrip
+
 MULTICAST_GROUP = "239.255.255.250"
 MULTICAST_PORT = 3702
 
@@ -497,6 +499,28 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
     report["channels"] = group_rtsp_channels(report.get("rtsp", []))
 
     port_open = {p: p in opened for p in [80, 8080, 8899, 34567, 554]}
+
+    # DVRIP/NetIP: la vía más fiable para las iCSee multi-lente que no exponen
+    # todas las lentes por RTSP. Enumeramos lentes y estado desde el protocolo
+    # propietario que usa la app.
+    if port_open.get(34567):
+        try:
+            dv = dvrip.probe(host, username, password, timeout=max(2.0, timeout * 2))
+            if dv.get("login_ok"):
+                report["dvrip"] = dv
+                report["hints"].append(
+                    f"DVRIP/NetIP autenticado: {dv.get('channels', 0)} lente(s) "
+                    "detectada(s) por el protocolo de la app iCSee. Usa el botón "
+                    "'Añadir los N' para darlas de alta como cámaras independientes."
+                )
+            elif dv.get("hints"):
+                report["hints"].append(
+                    "El puerto DVRIP 34567 está abierto pero la autenticación no "
+                    "es válida con esas credenciales. Prueba la cuenta de la app "
+                    "o admin con su contraseña."
+                )
+        except Exception as exc:
+            report["hints"].append(f"Error sondeando DVRIP/NetIP: {type(exc).__name__}: {exc}")
 
     if report["rtsp"]:
         report["hints"].append(

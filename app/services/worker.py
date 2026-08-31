@@ -76,6 +76,7 @@ class CameraWorker(threading.Thread):
         }
         self._ai_warned = False
         self._last_notified = 0.0
+        self._last_logged_error = ""
         self._notify_times = []
         self._tamper_since = 0.0
         self._last_tamper_event = 0.0
@@ -362,13 +363,26 @@ class CameraWorker(threading.Thread):
         try:
             self.source = build_source(self.camera)
             if not self.source.open():
+                err = getattr(self.source, "last_error", "") or "No se pudo abrir la fuente"
+                try:
+                    self.source.release()
+                except Exception:
+                    pass
+                self.source = None
                 self.status["state"] = "reconnecting"
-                self.status["last_error"] = "No se pudo abrir la fuente"
+                self.status["last_error"] = err
+                if err != self._last_logged_error:
+                    self._last_logged_error = err
+                    log.warning("No se pudo abrir la fuente de %s: %s", self.id, err)
                 return False
         except Exception as exc:
-            self.status["last_error"] = f"{type(exc).__name__}: {exc}"
+            err = f"{type(exc).__name__}: {exc}"
+            self.status["last_error"] = err
             self.status["state"] = "error"
             self.source = None
+            if err != self._last_logged_error:
+                self._last_logged_error = err
+                log.warning("Error abriendo la fuente de %s: %s", self.id, err)
             return False
         # primer frame para dimensiones
         for _ in range(15):
@@ -382,6 +396,7 @@ class CameraWorker(threading.Thread):
         if self.segment is not None:
             self.segment.source = self.source
         self.status["last_error"] = ""
+        self._last_logged_error = ""
         self.status["state"] = "running"
         return True
 

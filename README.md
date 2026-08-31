@@ -70,7 +70,8 @@ python vigia.py --lan --port 8000
 | **ffmpeg** | recomendado | grabación sin recodificar y miniaturas. Si no está, Vigía intenta usar el binario de `pip install imageio-ffmpeg` |
 | `ultralytics` | opcional | detectar **personas, vehículos y mascotas** con YOLO en vez de "movimiento" a secas |
 
-> `onvif-zeep` (ONVIF: detectar todas las lentes, PTZ, presets, snapshots) e
+> `onvif-zeep` (ONVIF: detectar todas las lentes, PTZ, presets, snapshots),
+> `dvrip` (NetIP por el puerto 34567: enumerar y abrir lentes iCSee/XMEye) e
 > `imageio-ffmpeg` (grabación sin recodificar) **ya se instalan con el
 > programa** — no hace falta instalarlos aparte. Solo la detección con IA es
 > opcional:
@@ -118,6 +119,7 @@ pip install ultralytics     # detección con IA (opcional)
 1. **ONVIF** (estándar): Vigía manda un Probe WS-Discovery a `239.255.255.250:3702` y las cámarascontestan con su nombre, modelo y URL de servicio.
 2. **Escaneo de red**: recorre tu subred buscando puertos típicos (554, 8554, 80, 8080…).
 3. **Sondeo RTSP**: prueba rutas conocidas (`/h264Preview_01_main`, `/Streaming/Channels/101`, `/cam/realmonitor?channel=1&subtype=0`…) con `DESCRIBE`. Si la cámara responde 200 o 401, existe.
+4. **DVRIP/NetIP** (puerto `34567`): las iCSee/XMEye responden al protocolo que usa su app; Vigía puede autenticarse, enumerar las lentes y abrirlas directamente sin depender de RTSP.
 
 URLs típicas:
 
@@ -137,19 +139,25 @@ URLs típicas:
 > como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, normalmente,
 > como un **perfil ONVIF** independiente con su propia URL RTSP. La forma más
 > fiable de detectarlas **todas** es el **🔧 Diagnosticar iCSee**: Vigía
-> agrupa automáticamente los canales RTSP detectados (Lente 1/2/3, y canal 0 si
-> es el mosaico) y, además, prueba ONVIF en **8899, 80, 8080 y 8000** para leer
-> los perfiles (uno por lente). En la sección **📷 Cámara multi-lente** hay un
-> botón **"➕ Añadir los N"** que da de alta todas las lentes de golpe, cada una
-> como **cámara independiente** (directo, detección, grabación y, si corresponde,
-> PTZ).
+> usa **varias vías** para no dejarte lentes fuera:
+>
+> 1. **RTSP** (`channel=1/2/3`): agrupa los canales que la cámara sí exponga.
+> 2. **ONVIF** en `8899/80/8080/8000`: lista perfiles (uno por lente) y su URL RTSP.
+> 3. **DVRIP/NetIP (puerto 34567)**: es el protocolo que usa la app iCSee. En
+>    muchos modelos **3-en-1** es la única vía fiable porque `channel=1/2/3` por
+>    RTSP **no cambia de lente**. Vigía autentica, lee cuántas lentes tiene y las
+>    abre como fuente nativa DVRIP.
+>
+> En la sección **📷 Cámara multi-lente** hay un botón **"➕ Añadir los N"** que
+> da de alta todas las lentes de golpe, cada una como **cámara independiente**
+> (directo, detección, grabación y, si corresponde, PTZ).
 >
 > **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF**
 > (Vigía prueba automáticamente 8899, 80, 8080 y 8000; cuenta `admin`, no la de
 > la app). Al añadir las lentes detectadas, Vigía activa PTZ sólo en la lente
-> giratoria y usa su token de perfil correcto. Algunas iCSee multi-lente no
-> traen ONVIF y sólo hablan su protocolo propietario (NetIP/DVRIP por el puerto
-> 34567); en ese caso el PTZ no está disponible vía ONVIF.
+> giratoria y usa su token de perfil correcto. Si la cámara no trae ONVIF, el
+> vídeo sigue funcionando por DVRIP pero el movimiento/zoom no está disponible
+> (no hay un estándar público universal para PTZ por NetIP).
 >
 > **Detección de movimiento**: la hace Vigía analizando el vídeo (sustractor de
 > fondo, con sensibilidad y zonas), así que no necesitas activar nada en la app
@@ -224,6 +232,25 @@ código, Vigía la sigue usando (para no perder lo que ya tenías). Puedes forza
 la ubicación con la variable `VIGIA_DATA_DIR` y moverla desde
 **Ajustes → Almacenamiento → Carpeta de grabaciones**.
 
+## Diagnóstico de errores
+
+Pulsa el botón **🩺** de la barra superior (o **Ajustes → 🩺 Diagnóstico y errores**).
+Muestra, en una sola pantalla:
+
+- si la carpeta de datos es escribible,
+- ffmpeg, OpenCV, ONVIF, DVRIP/NetIP, Web Push e IA instalados o no,
+- el estado y **último error** de cada cámara,
+- las últimas líneas de `logs/vigia.log` y los errores de arranque,
+- botón para descargar el log completo (las credenciales se ocultan).
+
+Si el programa no abre, los errores de arranque se guardan en:
+
+```
+%APPDATA%\Vigia\logs\startup_error.log      (Windows)
+~/Library/Application Support/Vigia/logs/startup_error.log   (macOS)
+~/.local/share/vigia/logs/startup_error.log (Linux)
+```
+
 ## API
 
 La interfaz habla con una API REST documentada en <http://localhost:8000/docs>. Lo más útil:
@@ -235,6 +262,9 @@ curl -X POST localhost:8000/api/system/discover \
      -H 'Content-Type: application/json' \
      -d '{"mode":"onvif","username":"admin","password":"1234"}'
 curl -X POST localhost:8000/api/cameras/ID/record?seconds=60   # grabación manual
+curl localhost:8000/api/system/diagnostics                     # dependencias + errores
+curl localhost:8000/api/system/logs/tail?file=vigia.log        # último log
+curl -X POST localhost:8000/api/system/dvrip/discover          # cámaras iCSee NetIP
 ```
 
 ## Consejos
