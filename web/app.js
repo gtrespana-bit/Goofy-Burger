@@ -1086,7 +1086,7 @@ function cameraWizard() {
     <div class="field">
       <label>Tipo de cámara</label>
       <select id="w-type">
-        <option value="rtsp">Cámara IP por RTSP (Reolink, Hikvision, Amcrest, Dahua…)</option>
+        <option value="rtsp">Cámara IP por RTSP (Reolink, Hikvision, Amcrest, Dahua, iCSee/XMEye…)</option>
         <option value="usb">Webcam USB / cámara del portátil</option>
         <option value="file">Fichero de vídeo (para pruebas)</option>
         <option value="demo">Cámara de demostración (sin hardware)</option>
@@ -1112,7 +1112,8 @@ function cameraWizard() {
       <div class="field"><label>Nombre</label><input id="w-name" placeholder="Entrada, Garaje, Salón…"></div>
       <div class="field"><label>Grupo / zona</label><input id="w-group" placeholder="Planta baja"></div>
       <div class="field w-rtsp"><label>URL RTSP (calidad alta, para grabar)</label>
-        <input id="w-url" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/101"></div>
+        <input id="w-url" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/101">
+        <span class="hint">Cámaras iCSee/XMEye: <code>rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream</code> (credenciales dentro de la ruta).</span></div>
       <div class="field w-rtsp"><label>URL RTSP secundaria (opcional, para detectar y ver en directo)</label>
         <input id="w-sub" placeholder="rtsp://192.168.1.50:554/Streaming/Channels/102"></div>
       <div class="field w-rtsp"><label>Usuario</label><input id="w-user"></div>

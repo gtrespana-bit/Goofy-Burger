@@ -53,6 +53,18 @@ COMMON_RTSP_PATHS = [
     "/mpeg4", "/h264", "/live.sdp", "/rtsp_tunnel",
 ]
 
+# Rutas RTSP de cámaras XMEye / iCSee (chip XiongMai, HI3516…).
+# Aquí las credenciales van EMBEBIDAS EN LA RUTA, no en el usuario de la URL.
+# {user} y {password} se sustituyen en ``probe_rtsp``.
+XMEYE_RTSP_PATHS = [
+    "/user={user}&password={password}&channel=1&stream=0.sdp?real_stream",
+    "/user={user}&password={password}&channel=1&stream=1.sdp?real_stream",
+    "/user={user}_password={password}_channel=1_stream=0.sdp?real_stream",
+    "/user={user}_password={password}_channel=1_stream=1.sdp?real_stream",
+    "/user={user}&password={password}&channel=1&stream=0.sdp",
+    "/user={user}_password={password}_channel=1_stream=0.sdp",
+]
+
 DEFAULT_PORTS = [554, 8554, 80, 8080, 8000, 8899, 10554]
 
 
@@ -266,13 +278,39 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
                workers: int = 16, timeout: float = 2.5) -> List[str]:
     """Prueba combinaciones puerto+ruta y devuelve las URLs que responden."""
     ports = ports or [554, 8554]
-    paths = paths or COMMON_RTSP_PATHS
     base_host = host.split("@")[-1]
-    if username:
-        auth = f"{username}:{password}@"
+    auth = f"{username}:{password}@" if username else ""
+
+    if paths is not None:
+        path_list = list(paths)
     else:
-        auth = ""
-    urls = [f"rtsp://{auth}{base_host}:{p}{path}" for p in ports for path in paths]
+        path_list = COMMON_RTSP_PATHS + XMEYE_RTSP_PATHS
+
+    # Para las rutas XMEye/iCSee las credenciales van dentro de la ruta. La
+    # cuenta RTSP de estas cámaras suele ser 'admin' (aunque en la app se entre
+    # con otra cuenta), así que probamos la dada y unos cuantos valores por
+    # defecto muy habituales.
+    credential_sets: List[tuple] = []
+    if username:
+        credential_sets.append((username, password))
+    if (username or "").lower() != "admin":
+        credential_sets += [("admin", password), ("admin", ""), ("admin", "admin")]
+    if not credential_sets:
+        credential_sets = [("admin", "")]
+
+    urls: List[str] = []
+    for port in ports:
+        for path in path_list:
+            if "{user}" in path or "{password}" in path:
+                for u, pw in credential_sets:
+                    try:
+                        filled = path.format(user=u, password=pw)
+                    except (KeyError, ValueError):
+                        continue
+                    urls.append(f"rtsp://{base_host}:{port}{filled}")
+            else:
+                urls.append(f"rtsp://{auth}{base_host}:{port}{path}")
+
     valid: List[str] = []
 
     def check(url):

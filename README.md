@@ -56,7 +56,7 @@ pip install ultralytics     # detección con IA
 ## Qué sabe hacer
 
 **Cámaras**
-- RTSP (Reolink, Hikvision, Dahua, Amcrest, Tapo vía rtsp…), webcams USB y ficheros de vídeo.
+- RTSP (Reolink, Hikvision, Dahua, Amcrest, Tapo vía rtsp, iCSee/XMEye…), webcams USB y ficheros de vídeo.
 - Flujo principal para grabar + flujo secundario para detectar/ver en directo (así una cámara 4K no te come la CPU).
 - Autodescubrimiento: ONVIF (WS-Discovery), escaneo de la subred y sondeo de rutas RTSP habituales por fabricante.
 - Prueba de conexión con foto real antes de guardar.
@@ -93,6 +93,12 @@ URLs típicas:
 | Reolink | `rtsp://IP:554/h264Preview_01_main` | `…/h264Preview_01_sub` |
 | Hikvision / LTS | `rtsp://IP:554/Streaming/Channels/101` | `…/102` |
 | Dahua / Amcrest | `rtsp://IP:554/cam/realmonitor?channel=1&subtype=0` | `…subtype=1` |
+| iCSee / XMEye | `rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream` | `…stream=1.sdp…` |
+
+> Las cámaras **iCSee/XMEye** (chip XiongMai) ponen las credenciales **dentro de
+> la ruta** (`user=…&password=…`), no en `rtsp://usuario:contraseña@…`. La cuenta
+> RTSP suele ser `admin` (a veces con contraseña vacía), distinta de la cuenta
+> con la que entras en la app iCSee. Vigía las detecta y sondea automáticamente.
 
 Si la cámara pide usuario, ponlo en el formulario y Vigía lo inyecta en la URL.
 
