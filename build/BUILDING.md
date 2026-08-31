@@ -39,8 +39,21 @@ python -m venv .venv
 pip install -r requirements.txt pyinstaller
 ```
 
-Descarga e instala [Inno Setup 6](https://jrsoftware.org/isinfo.php) y deja
-`ISCC.exe` accesible (añádelo al PATH).
+Descarga e instala [Inno Setup 6](https://jrsoftware.org/isinfo.php). El
+script `build_windows.bat` busca `ISCC.exe` en el PATH y en las rutas
+habituales de Inno Setup 6 y 7, así que no hace falta añadirlo manualmente al
+PATH. El instalador usa `x64compatible` si el compilador es 6.3+ (o 7) y
+`x64` con versiones anteriores, así que compila en cualquiera de ellas.
+
+Si lo instalaste en una ruta personalizada, indícala antes de compilar:
+
+```bat
+set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+build\build_windows.bat
+```
+
+Otra opción es abrir el *Inno Setup Compiler* desde el menú inicio y ejecutar
+ahí el script.
 
 Compila todo de una vez:
 
@@ -58,6 +71,21 @@ El instalador:
 - crea accesos directos (escritorio + menú inicio),
 - opcionalmente lo arranca con Windows,
 - **no borra** `%APPDATA%\Vigia` al desinstalar.
+
+## Solución de problemas
+
+- **"No se encontró ISCC.exe de Inno Setup 6 en el PATH"** — el script ya
+  detecta automáticamente las rutas por defecto de Inno Setup 6 y 7. Si
+  todavía no lo encuentra, usa `set "ISCC_PATH=..."` como se indica más
+  arriba. Puedes comprobar la ruta con:
+  `dir "%ProgramFiles(x86)%\Inno Setup 6\ISCC.exe"`.
+- **`Vigia.exe` no arranca con `'NoneType' object has no attribute 'isatty'`
+  / `Unable to configure formatter 'default'`** — ocurre por ejecutar uvicorn
+  dentro de un `.exe` sin consola (`console=False`), donde Windows deja
+  `stdout/stderr` a `None`. El punto de entrada ahora redirige esos flujos a
+  `os.devnull` y apaga los colores de uvicorn, así que la app arranca sin
+  ventana de consola y guarda sus logs en `%APPDATA%\Vigia\logs\vigia.log`.
+  Es necesario **volver a compilar** el `.exe` con el código corregido.
 
 ## macOS / Linux
 

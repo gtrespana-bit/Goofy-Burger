@@ -11,6 +11,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def _prepare_std_streams() -> None:
+    """En modo ventana (PyInstaller ``console=False``) stdout/stderr/stdin
+    son ``None`` y uvicorn falla al configurar sus formatters/handlers.
+
+    Los reemplazamos por ``os.devnull`` para que uvicorn y el logging propio no
+    se caigan. El log detallado sigue guardándose en ``%APPDATA%\\Vigia\\logs``
+    (ver ``app.logging_setup``).
+    """
+    args = {"encoding": "utf-8", "errors": "replace"}
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        stream = getattr(sys, name, None)
+        if stream is None:
+            setattr(sys, name, open(os.devnull, mode, **args))
+
+
 def _default_data_dir() -> str:
     """Carpeta de datos por defecto, igual que en app.config (aquí sin cargar
     la app para poder lanzar el navegador antes/después)."""
@@ -36,6 +51,10 @@ def _open_browser(url: str, delay: float = 1.5) -> None:
 
 
 def main() -> None:
+    # Debe ejecutarse antes de usar stdout/stderr o crear la Config de uvicorn:
+    # en un .exe empaquetado como ventana (console=False) son None.
+    _prepare_std_streams()
+
     parser = argparse.ArgumentParser(description="Vigía - videovigilancia casera")
     parser.add_argument("--host", default=os.environ.get("VIGIA_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("VIGIA_PORT", 8000)))
@@ -69,6 +88,7 @@ def main() -> None:
         reload=args.reload,
         log_level="info",
         access_log=False,
+        use_colors=False,
     )
 
 

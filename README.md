@@ -26,7 +26,10 @@ build\build_windows.bat
 ```
 
 Esto genera `dist\Vigia-Setup-0.1.0.exe` (instalador) y `dist\Vigia\Vigia.exe`
-(carpeta portátil). Detalles en [`build/BUILDING.md`](build/BUILDING.md).
+(carpeta portátil). Resta instalar [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+(o 7); el script lo encuentra solo. Si lo instalaste en una ruta
+personalizada: `set "ISCC_PATH=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"`.
+Detalles en [`build/BUILDING.md`](build/BUILDING.md).
 
 ## Arrancar en 2 minutos (desde el código)
 
