@@ -101,11 +101,14 @@ URLs típicas:
 > con la que entras en la app iCSee. Vigía las detecta y sondea automáticamente.
 >
 > Las cámaras **multi-lente** (p. ej. "2 en 1" o "3 en 1") exponen cada lente
-> como un **canal**: `channel=1`, `channel=2`, `channel=3`… Vigía sondea los
-> canales 1–4 y ofrece **"➕ Añadir los N"** para darlas de alta todas de golpe,
-> cada lente como **cámara independiente** (con su propio directo, detección y
-> grabación). Si el firmware expone el canal 0, ese es el **mosaico** (todas las
-> lentes en una sola imagen).
+> como un **canal** (`channel=1`, `channel=2`, `channel=3`…) y, sobre todo, como
+> un **perfil ONVIF** independiente en el puerto **8899** con su propia URL
+> RTSP. La forma más fiable de detectarlas **todas** es el **🔧 Diagnosticar
+> iCSee**: si el 8899 está abierto, Vigía enumera los perfiles ONVIF (uno por
+> lente) y te ofrece **"➕ Añadir los N"** para darlas de alta todas de golpe,
+> cada lente como **cámara independiente** (con su propio directo, detección,
+> grabación y PTZ). Si además el firmware expone el canal 0 por RTSP, ese es el
+> **mosaico** (todas las lentes en una sola imagen).
 >
 > **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF en el
 > puerto 8899** (cuenta `admin`, no la de la app). Vigía lo configura solo al
@@ -140,7 +143,12 @@ Pasos:
    pega una URL RTSP que lleve `user=admin&password=` en la propia ruta:
    `rtsp://IP:554/user=admin&password=&channel=1&stream=0.sdp?real_stream`
    (la `password` se deja vacía; si le pusiste contraseña a `admin`, ponla).
-4. Pega la URL en **«URL RTSP»** y pulsa **Probar conexión** para ver una foto
+4. Si es **multi-lente y solo ves la principal**: el diagnóstico te mostrará
+   la sección **📷 Cámara multi-lente** con **"➕ Añadir los N"** (detectada vía
+   ONVIF en el 8899). Púlsalo y añadirá todas las lentes de una vez, cada una
+   como cámara independiente **con sus botones de mover (PTZ)**. Requiere
+   `pip install onvif-zeep` para el control de movimiento.
+5. Pega la URL en **«URL RTSP»** y pulsa **Probar conexión** para ver una foto
    real antes de guardar.
 
 Una URL iCSee/XMEye válida tiene este aspecto (credenciales **dentro de la
