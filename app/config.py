@@ -237,38 +237,33 @@ def camera_source_key(cam: Dict[str, Any]) -> Tuple:
     motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
     multi-lente).
 
-    La misma lente puede estar guardada como cámara RTSP (``rtsp://…
-    channel=N``, donde el canal es 1-based y el 0 es el mosaico) o como
-    DVRIP/NetIP (``channel`` 0-based). Unificamos ambas a ``(host, índice de
-    lente 0-based)`` para que una lente añadida dos veces por vías distintas se
-    detecte como duplicada y se conserve una sola copia.
+    IMPORTANTE: la clave distingue la vía (RTSP vs DVRIP). Una lente añadida
+    por RTSP y por DVRIP son entradas distintas: si las unificásemos, al
+    reintentar "añadir por RTSP" se detectaría como duplicada una cámara DVRIP
+    ya existente y el alta se bloquearía (la cámara "no se agrega"). Sólo se
+    deduplican duplicados de la MISMA vía.
     """
     st = cam.get("source_type") or "rtsp"
     if st == "dvrip":
         dv = cam.get("dvrip") or {}
         host = _bare_host(str(dv.get("host", "") or ""))
         channel = int(dv.get("channel", -1) or -1)  # 0-based (0 = primera lente)
-        return ("lens", host, channel)
+        return ("dvrip", host, channel)
 
     url = cam.get("url") or ""
     host = _bare_host(urlsplit(url).hostname or "")
     if not host:
         return ("url", "", _clean_camera_url(url))
 
-    # URL dvrip://host:port/channel=N -> N es 1-based
+    # URL dvrip://host:port/channel=N (N 1-based) -> clave dvrip
     if urlsplit(url).scheme.lower() == "dvrip":
         m = re.search(r"channel=(\d+)", url, re.I)
         channel = int(m.group(1)) - 1 if m else -1
-        return ("lens", host, channel)
+        return ("dvrip", host, channel)
 
     m = re.search(r"[?&_]channel=(\d+)", url, re.I)
     if m:
-        ch = int(m.group(1))
-        if ch > 0:
-            # RTSP iCSee: canal 1..N = lente 1..N -> índice 0-based
-            return ("lens", host, ch - 1)
-        # canal 0 = vista combinada (mosaico): identidad propia
-        return ("mosaic", host)
+        return ("channel", host, m.group(1))
     return ("url", host, _clean_camera_url(url))
 
 

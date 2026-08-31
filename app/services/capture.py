@@ -279,6 +279,7 @@ class DvripSource(Source):
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._codec = "h264"
+        self._got_frame = False
 
     @staticmethod
     def _ffmpeg_bin() -> Optional[str]:
@@ -324,27 +325,50 @@ class DvripSource(Source):
     def open(self) -> bool:
         cfg = self._config()
         if not cfg["host"]:
+            self.last_error = "No hay host DVRIP configurado"
             return False
         from .dvrip import stream_channel
 
-        try:
-            client, data_sock, control_sock, raw = stream_channel(
-                cfg["host"], cfg["username"], cfg["password"], cfg["channel"],
-                port=cfg["port"], stream=cfg["stream"],
+        # Demuxers a probar. "auto" prueba h264 y, si no llega vídeo, hevc
+        # (muchas iCSee/XMEye graban H.265/HEVC en el flujo principal).
+        if cfg["codec"] in ("h265", "hevc"):
+            codecs = ["hevc"]
+        elif cfg["codec"] in ("h264",):
+            codecs = ["h264"]
+        else:
+            codecs = ["h264", "hevc"]
+
+        last_error = ""
+        for codec in codecs:
+            self._cleanup()  # cierra un intento previo antes de reconectar
+            self._got_frame = False
+            self._stop.clear()
+            self._codec = codec
+            try:
+                client, data_sock, control_sock, raw = stream_channel(
+                    cfg["host"], cfg["username"], cfg["password"], cfg["channel"],
+                    port=cfg["port"], stream=cfg["stream"],
+                )
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+            self.client, self.data_sock, self.control_sock, self.raw = (
+                client, data_sock, control_sock, raw
             )
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return False
-        self.client, self.data_sock, self.control_sock, self.raw = (
-            client, data_sock, control_sock, raw
-        )
-        self._codec = cfg["codec"]
+            if self._start_ffmpeg(codec):
+                return True
+            last_error = self.last_error or last_error
+
+        self.last_error = last_error or "DVRIP conectado pero no llegó vídeo del canal"
+        self._cleanup()
+        return False
+
+    def _start_ffmpeg(self, demux: str) -> bool:
+        """Arranca ffmpeg (con el demuxer dado) y espera el primer frame real."""
         exe = self._ffmpeg_bin()
         if not exe:
             self.last_error = "ffmpeg no está disponible para decodificar DVRIP"
-            self._cleanup()
             return False
-        demux = "hevc" if self._codec in ("h265", "hevc") else "h264"
         try:
             spawn_kwargs: dict = {
                 "stdin": subprocess.PIPE,
@@ -365,7 +389,7 @@ class DvripSource(Source):
             )
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            self._cleanup()
+            self._ff_proc = None
             return False
         self._stop.clear()
         self._writer = threading.Thread(target=self._feed_ffmpeg, daemon=True, name="dvrip-writer")
@@ -376,12 +400,10 @@ class DvripSource(Source):
         waiter.start()
         waiter.join(self.first_frame_timeout)
         if waiter.is_alive() or not self._got_frame:
-            self.last_error = "DVRIP conectado pero no llegó vídeo del canal"
-            self._cleanup()
+            self.last_error = f"DVRIP no dio vídeo con demux {demux}"
             return False
+        self.last_error = ""
         return True
-
-    _got_frame = False
 
     def _wait_first_frame(self) -> None:
         try:
@@ -573,27 +595,11 @@ class RtspSource(Cv2Source):
             self.last_error = "La cámara no tiene URL RTSP"
             return False
         self.last_error = ""
-        # iCSee/XMEye multi-lente suele fallar en RTSP (401) pero funciona por
-        # DVRIP/NetIP 34567. Si la URL ya trae user=..password=..&channel=N,
-        # usamos DVRIP directamente: evita abrir ventanas ffmpeg y repetir 401.
-        if self._is_icsee_target(target):
-            try:
-                from .dvrip import available as dvrip_available
-                dvrip_ok = bool(dvrip_available())
-            except Exception:
-                dvrip_ok = False
-            if dvrip_ok:
-                return self._open_dvrip_fallback(target)
-            # Sin librería DVRIP seguimos probando RTSP por si OpenCV lo abre.
-        if (self.camera.get("dvrip") or {}).get("enabled"):
-            if self._open_dvrip_fallback(target):
-                return True
-            self.last_error = ""
-        # Primero intentamos con OpenCV (rápido y con buena resolución).
+
+        # 1) RTSP primero: es lo que el usuario eligió al añadir la cámara por
+        #    URL RTSP. OpenCV es rápido; si "abre" pero no da frames, soltamos y
+        #    probamos el lector ffmpeg (rtsp_transport tcp), más fiable con iCSee.
         if super().open():
-            # Algunos backends OpenCV dicen "abierto" aunque la cámara no dé
-            # vídeo (sobre todo XMEye/iCSee). Esperamos un primer frame real;
-            # si no llega, soltamos OpenCV y probamos el lector ffmpeg.
             frames: List[Tuple[bool, Optional[np.ndarray]]] = []
             waiter = threading.Thread(
                 target=lambda: frames.append(super().read()),
@@ -604,11 +610,8 @@ class RtspSource(Cv2Source):
             waiter.join(self.first_frame_timeout)
             if not waiter.is_alive() and frames and frames[0][0] and frames[0][1] is not None:
                 return True
-            self.release()  # liberamos el handle cv2 que no produce vídeo
-        # Respaldo con ffmpeg para cámaras iCSee/XMEye que OpenCV no abre o
-        # que se quedan "abiertas" sin enviar frames.
-        # Siempre usamos una resolución pequeña de trabajo; la grabación usa el
-        # flujo original con ffmpeg (record_url).
+            self.release()  # el handle OpenCV no producía vídeo
+
         try:
             self.ffmpeg = FfmpegRTSPReader(target)
             if self.ffmpeg.open():
@@ -619,9 +622,20 @@ class RtspSource(Cv2Source):
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             self.ffmpeg = None
-        # Último intento para XMEye/iCSee: RTSP da 401 pero DVRIP suele abrir.
-        if not self.dvrip_fallback and self._open_dvrip_fallback(target):
-            return True
+
+        # 2) Respaldo DVRIP/NetIP (34567) para iCSee/XMEye: cuando RTSP responde
+        #    401 o no cambia de lente, el protocolo propietario suele abrir cada
+        #    lente. Sólo si la URL parece iCSee o si dvrip.enabled está activo.
+        want_dvrip = bool((self.camera.get("dvrip") or {}).get("enabled")) or self._is_icsee_target(target)
+        if want_dvrip:
+            try:
+                from .dvrip import available as dvrip_available
+
+                if dvrip_available() and self._open_dvrip_fallback(target):
+                    return True
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+
         return False
 
     def read(self):

@@ -2573,11 +2573,13 @@ function cameraWizard() {
   // pulsar "Añadir" dos veces).
   function alreadyExists(payload) {
     return state.cameras.find(c => {
+      // Sólo comparamos con cámaras de la MISMA vía: una cámara RTSP y una
+      // DVRIP de la misma lente son entradas distintas y no deben bloquearse.
       if (payload.source_type === 'dvrip' && c.source_type === 'dvrip') {
         return (c.dvrip?.host || '') === (payload.dvrip?.host || '')
           && +c.dvrip?.channel === +(payload.dvrip?.channel ?? -1);
       }
-      if (payload.source_type === 'rtsp') {
+      if (payload.source_type === 'rtsp' && c.source_type === 'rtsp') {
         const a = icseeInfo(payload.url || '');
         const b = icseeInfo(c.url || '');
         if (a.host && a.host === b.host) {
