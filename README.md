@@ -17,9 +17,10 @@ Fichero     ─┘              │
 ## Instalar como aplicación de escritorio
 
 Vigía se puede empaquetar como un **programa de ordenador de verdad** (`.exe`
-autocontenido + instalador de Windows), que **abre el navegador solo**, con
-ONVIF y ffmpeg incluidos, y que **conserva tus datos al actualizar** (la
-configuración y las grabaciones viven en `%APPDATA%\Vigia`, fuera del programa).
+autocontenido + instalador de Windows). Al abrirlo, la interfaz se muestra en
+**su propia ventana de escritorio** (ya no se abre en el navegador), con ONVIF
+y ffmpeg incluidos, y **conserva tus datos al actualizar** (la configuración y
+las grabaciones viven en `%APPDATA%\Vigia`, fuera del programa).
 
 ```bat
 build\build_windows.bat
@@ -42,8 +43,9 @@ Detalles en [`build/BUILDING.md`](build/BUILDING.md).
 ./start.sh --lan      # accesible desde otros equipos de la casa
 ```
 
-Vigía **abre el navegador automáticamente** en <http://localhost:8000> (usa
-`--no-browser` para evitarlo). Pulsa **+ Añadir cámara**.
+Vigía se abre en **su propia ventana de escritorio** (usa `--browser` si
+prefieres el navegador, o `--no-browser` para no abrir ninguna ventana).
+Pulsa **+ Añadir cámara**.
 
 > ¿Quieres verlo funcionando antes de conectar nada? Crea una cámara de
 > **tipo demo**: genera vídeo sintético con movimiento y verás directo,

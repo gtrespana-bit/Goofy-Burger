@@ -16,5 +16,9 @@ onvif-zeep>=0.2.12
 # más (si el sistema ya tiene ffmpeg, se usa ese).
 imageio-ffmpeg>=0.4.9
 
+# Ventana propia de escritorio (Windows): evita abrir la interfaz en el
+# navegador. En macOS/Linux se puede usar igual si el entorno lo soporta.
+pywebview>=5.0; platform_system == "Windows"
+
 # --- Opcional (recomendado): detección con IA (personas / vehículos / mascotas)
 # ultralytics>=8.1

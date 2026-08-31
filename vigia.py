@@ -118,6 +118,27 @@ def _open_browser(url: str, delay: float = 1.5) -> None:
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _open_desktop_window(url: str) -> None:
+    """Abre la interfaz en una ventana propia de escritorio (pywebview).
+
+    En un `.exe` instalado esto evita saltar al navegador: la app se ve como
+    una aplicación normal, dentro de su propia ventana.
+    """
+    import webview  # type: ignore
+
+    webview.create_window(
+        "Vigía",
+        url,
+        width=1280,
+        height=820,
+        min_size=(1000, 680),
+        resizable=True,
+        confirm_close=False,
+        text_select=True,
+    )
+    webview.start()
+
+
 def _run_main() -> None:
     parser = argparse.ArgumentParser(description="Vigía - videovigilancia casera")
     parser.add_argument("--host", default=os.environ.get("VIGIA_HOST", "127.0.0.1"))
@@ -129,7 +150,9 @@ def _run_main() -> None:
                         help="Carpeta de datos (config + grabaciones). "
                              "Por defecto: carpeta de datos del usuario.")
     parser.add_argument("--no-browser", action="store_true",
-                        help="No abrir el navegador automáticamente al arrancar")
+                        help="No abrir ninguna ventana ni navegador al arrancar")
+    parser.add_argument("--browser", action="store_true",
+                        help="Usar el navegador en vez de la ventana propia (requiere pywebview)")
     args = parser.parse_args()
 
     if args.lan:
@@ -208,8 +231,40 @@ def _run_main() -> None:
             detail += "\n\nDetalle del error:\n" + thread_errors[-1]
         raise RuntimeError(detail)
 
+    url = f"http://127.0.0.1:{args.port}/"
+
+    # Por defecto, la app se abre en su propia ventana de escritorio (pywebview).
+    # Sólo usamos el navegador si se pide con --browser, con --no-browser, o si
+    # pywebview no está instalado (p.ej. ejecutando desde código en Linux).
+    window_used = False
+    window_error = ""
+    if not args.no_browser and not args.browser:
+        try:
+            _open_desktop_window(url)
+            window_used = True
+        except Exception as exc:
+            window_error = f"{type(exc).__name__}: {exc}"
+
+    if window_used:
+        # La ventana se cerró: detener el servidor.
+        server.should_exit = True
+        thread.join(timeout=10)
+        return
+
+    if window_error:
+        try:
+            log_path = _safe_data_dir() / "logs" / "startup_error.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            with log_path.open("a", encoding="utf-8", errors="replace") as fh:
+                fh.write(
+                    f"[{__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S}] "
+                    f"Ventana propia no disponible ({window_error}); se abre el navegador.\n"
+                )
+        except Exception:
+            pass
+
     if not args.no_browser:
-        _open_browser(f"http://127.0.0.1:{args.port}/")
+        _open_browser(url)
 
     thread.join()
 

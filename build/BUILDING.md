@@ -103,9 +103,11 @@ El instalador:
 
 Puedes usar PyInstaller igualmente (`pyinstaller --noconfirm build/vigia.spec`
 y adaptar `console=False`), o simplemente distribuir `start.sh`/`start.bat`,
-que instalan dependencias automáticamente y abren el navegador.
+que instalan dependencias automáticamente y abren la interfaz.
 
 ## En marcha
 
-Al arrancar, Vigía abre el navegador en `http://127.0.0.1:8000` automáticamente
-(usa `--no-browser` para evitarlo).
+En Windows, al arrancar, Vigía abre **su propia ventana de escritorio**
+(`pywebview`) apuntando a `http://127.0.0.1:8000`. Si prefieres que se abra en
+el navegador usa `--browser`; para no abrir ninguna ventana usa `--no-browser`.
+Si pywebview no está instalado, Vigía cae automáticamente al navegador.
