@@ -28,10 +28,28 @@ def iso(dt: datetime) -> str:
 # --------------------------------------------------------------------------
 # RTSP helpers
 # --------------------------------------------------------------------------
+# Rutas XMEye/iCSee: credenciales dentro de la ruta (user=..&password=..).
+_XMEYE_PATH_RE = re.compile(r"(user=)[^&/?\s]*(&password=)[^&/?\s]*", re.I)
+_XMEYE_UNDERSCORE_RE = re.compile(r"(user=)[^_?\s]*(_password=)[^_?\s]*", re.I)
+
+
 def with_credentials(url: str, username: str = "", password: str = "") -> str:
-    """Inyecta usuario/contraseña en una URL rtsp:// si no los trae ya."""
+    """Inyecta usuario/contraseña en una URL rtsp:// si no los trae ya.
+
+    - URL estándar (``rtsp://host/ruta``): credenciales en el usuario de la URL.
+    - URL XMEye/iCSee (``.../user=..&password=..&channel=..`` o variante con
+      guiones bajos): se reescriben las credenciales dentro de la propia ruta.
+    """
     if not url or not username:
         return url
+    if _XMEYE_PATH_RE.search(url):
+        return _XMEYE_PATH_RE.sub(
+            lambda m: f"user={username}&password={password}", url, count=1
+        )
+    if _XMEYE_UNDERSCORE_RE.search(url):
+        return _XMEYE_UNDERSCORE_RE.sub(
+            lambda m: f"user={username}_password={password}", url, count=1
+        )
     parts = urlsplit(url)
     if parts.username:
         return url
