@@ -68,7 +68,10 @@ XMEYE_RTSP_PATHS = [
 
 # Canales a sondear en cámaras XMEye/iCSee. La mayoría tienen 1, pero las
 # multi-lente ("2 en 1", "3 en 1"…) llegan a 3 o 4. Sondeamos 1-4 por si acaso.
+# El canal 0, en algunos firmwares, expone la vista combinada (mosaico) de todos
+# los lentes; en otros simplemente no responde. Se sondea aparte como candidato.
 XMEYE_CHANNELS = [1, 2, 3, 4]
+XMEYE_MOSAIC_CHANNEL = "0"
 
 DEFAULT_PORTS = [554, 8554, 80, 8080, 8000, 8899, 10554]
 
@@ -309,8 +312,9 @@ def probe_rtsp(host: str, username: str = "", password: str = "",
             if "{user}" in path or "{password}" in path:
                 # Rutas XMEye/iCSee: credenciales y canal dentro de la ruta.
                 # Cada canal puede ser un lente distinto (cámaras multi-lente).
+                # El canal mosaico (0) se sondea como candidato extra.
                 for u, pw in credential_sets:
-                    for channel in XMEYE_CHANNELS:
+                    for channel in list(XMEYE_CHANNELS) + [XMEYE_MOSAIC_CHANNEL]:
                         try:
                             filled = path.format(user=u, password=pw, channel=channel)
                         except (KeyError, ValueError):

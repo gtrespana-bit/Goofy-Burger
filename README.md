@@ -102,8 +102,20 @@ URLs típicas:
 >
 > Las cámaras **multi-lente** (p. ej. "2 en 1" o "3 en 1") exponen cada lente
 > como un **canal**: `channel=1`, `channel=2`, `channel=3`… Vigía sondea los
-> canales 1–4 y puedes añadir cada lente como una **cámara independiente** (con
-> su propio directo, detección y grabación), que es como se ven en el panel.
+> canales 1–4 y ofrece **"➕ Añadir los N"** para darlas de alta todas de golpe,
+> cada lente como **cámara independiente** (con su propio directo, detección y
+> grabación). Si el firmware expone el canal 0, ese es el **mosaico** (todas las
+> lentes en una sola imagen).
+>
+> **Mover/zoom (PTZ)**: si un lente es motorizado, se controla por **ONVIF en el
+> puerto 8899** (cuenta `admin`, no la de la app). Vigía lo configura solo al
+> añadir una cámara iCSee. Requiere `pip install onvif-zeep`. Algunas iCSee
+> multi-lente no traen ONVIF y sólo hablan su protocolo propietario (NetIP/DVRIP
+> por el puerto 34567); en ese caso el PTZ no está disponible vía ONVIF.
+>
+> **Detección de movimiento**: la hace Vigía analizando el vídeo (sustractor de
+> fondo, con sensibilidad y zonas), así que no necesitas activar nada en la app
+> iCSee: sirve para cualquiera de los lentes por igual.
 
 Si la cámara pide usuario, ponlo en el formulario y Vigía lo inyecta en la URL.
 

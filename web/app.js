@@ -1129,6 +1129,7 @@ function cameraWizard() {
     <div class="divider"></div>
     <h4>ONVIF (movimiento, zoom, presets)</h4>
     <label class="checkline"><input type="checkbox" id="w-onvif"> Configurar ONVIF (host, puerto y credenciales)</label>
+    <p class="hint" style="margin:6px 0 0">Cámaras iCSee/XMEye: puerto <b>8899</b> y credenciales <code>admin</code>/vacía (no las de la app). Requiere <code>pip install onvif-zeep</code>.</p>
     <div id="w-onvif-box" style="display:none" class="form-grid">
       <div class="field"><label>Host ONVIF</label><input id="w-ov-host" placeholder="192.168.1.50"></div>
       <div class="field"><label>Puerto</label><input type="number" id="w-ov-port" value="80"></div>
@@ -1159,8 +1160,22 @@ function cameraWizard() {
   $('#w-cancel').onclick = closeModal;
 
   // ---- autodescubrimiento ----
+  // Detecta si una URL es de una cámara iCSee/XMEye (credenciales en la ruta).
+  function isIcseeUrl(u) {
+    return /user=[^&/?\s]*&password=/i.test(u) || /user=[^_?\s]*_password=/i.test(u);
+  }
+  // Extrae host y credenciales de una URL iCSee/XMEye (user=..&password=..).
+  function icseeInfo(u) {
+    let host = '';
+    try { host = new URL(u).hostname; } catch {}
+    const um = /(?:^|[?&_/])user=([^&_?\s]*)/i.exec(u);
+    const pm = /(?:^|[?&_])password=([^&_?\s]*)/i.exec(u);
+    return { host, username: um ? decodeURIComponent(um[1]) : '', password: pm ? decodeURIComponent(pm[1]) : '' };
+  }
+
   // Agrupa las URLs RTSP por canal (channel=N) y separa principal/secundario.
   // Las cámaras multi-lente (iCSee/XMEye) devuelven una URL por lente.
+  // El canal 0, si responde, es la vista combinada (mosaico).
   function parseChannelUrls(urls) {
     const groups = new Map();
     const leftover = [];
@@ -1170,7 +1185,7 @@ function cameraWizard() {
       const stm = /[?&_]stream=(\d+)/i.exec(u);
       const isSub = !!(stm && stm[1] === '1');
       const key = chm[1];
-      if (!groups.has(key)) groups.set(key, { channel: chm[1], main: '', sub: '' });
+      if (!groups.has(key)) groups.set(key, { channel: chm[1], main: '', sub: '', mosaic: chm[1] === '0' });
       const g = groups.get(key);
       if (isSub) { if (!g.sub) g.sub = u; }
       else if (!g.main) g.main = u;
@@ -1179,27 +1194,43 @@ function cameraWizard() {
     return { groups: sorted, leftover };
   }
 
+  function onvifConfigFor(url) {
+    const info = icseeInfo(url);
+    return {
+      enabled: true,
+      host: info.host,
+      port: 8899,               // iCSee/XMEye expone ONVIF en 8899
+      username: info.username,
+      password: info.password,
+      profile_token: '',
+    };
+  }
+
   // Crea una cámara por cada canal/lente detectado. Las URLs ya traen las
   // credenciales embebidas (user=..&password=..), así que no las pisamos.
+  // Para cámaras iCSee/XMEye activa ONVIF (puerto 8899) para mover/zoom (PTZ).
   async function addAllChannels(groups) {
     const base = $('#w-name').value.trim() || 'Cámara';
     const grp = $('#w-group').value.trim() || 'General';
+    const icsee = groups.some(g => isIcseeUrl(g.main || g.sub));
     let added = 0;
     for (const g of groups) {
+      const url = g.main || g.sub || '';
       const payload = {
-        name: `${base} · lente ${g.channel}`,
+        name: g.mosaic ? `${base} · mosaico` : `${base} · lente ${g.channel}`,
         group: grp,
         source_type: 'rtsp',
-        url: g.main || g.sub || '',
+        url,
         substream_url: g.sub || '',
       };
+      if (icsee) payload.onvif = onvifConfigFor(url);
       try {
         await api('/cameras', { method: 'POST', body: payload });
         added++;
-      } catch (e) { toast(`Lente ${g.channel}: ${e.message}`, 'err'); }
+      } catch (e) { toast(`${g.mosaic ? 'Mosaico' : 'Lente ' + g.channel}: ${e.message}`, 'err'); }
     }
     if (added) {
-      toast(`${added} cámaras añadidas`);
+      toast(`${added} cámaras añadidas${icsee ? ' (ONVIF/PTZ configurado en puerto 8899)' : ''}`);
       closeModal();
       await refresh(true);
       location.hash = '#/dashboard';
@@ -1221,22 +1252,33 @@ function cameraWizard() {
       if (mode === 'rtsp') {
         const urls = data.urls || [];
         const { groups, leftover } = parseChannelUrls(urls);
+        const lensGroups = groups.filter(g => !g.mosaic);
+        const mosaic = groups.find(g => g.mosaic);
+        const icsee = groups.some(g => isIcseeUrl(g.main || g.sub));
         let html = '';
-        if (groups.length > 1) {
+        if (lensGroups.length > 1) {
           html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
             <div class="grow">
-              <div class="title">📷 Cámara multi-lente (${groups.length} canales)</div>
-              <div class="meta">Cada lente se añadirá como una cámara independiente.</div>
+              <div class="title">📷 Cámara multi-lente (${lensGroups.length} canales)</div>
+              <div class="meta">Cada lente se añadirá como una cámara independiente${icsee ? ' · PTZ vía ONVIF (8899)' : ''}.</div>
             </div>
-            <button class="btn sm primary" id="w-add-channels">➕ Añadir los ${groups.length}</button>
+            <button class="btn sm primary" id="w-add-channels">➕ Añadir los ${lensGroups.length}</button>
           </div>`;
         }
-        html += groups.map(g => `
+        html += lensGroups.map(g => `
           <div class="item"><div class="grow">
             <div class="title" style="font-size:12px">Lente ${esc(g.channel)}</div>
             <div class="meta" style="font-size:11px;word-break:break-all">${esc(g.main || g.sub)}</div>
           </div>
           <button class="btn sm" data-url="${esc(g.main || '')}" data-sub="${esc(g.sub || '')}">Usar</button></div>`).join('');
+        if (mosaic) {
+          html += `<div class="item" style="border-left:3px solid var(--accent,#3ddc97)">
+            <div class="grow">
+              <div class="title" style="font-size:12px">🧩 Mosaico (todas las lentes en una imagen)</div>
+              <div class="meta" style="font-size:11px;word-break:break-all">${esc(mosaic.main || mosaic.sub)}</div>
+            </div>
+            <button class="btn sm" data-url="${esc(mosaic.main || '')}" data-sub="${esc(mosaic.sub || '')}">Usar</button></div>`;
+        }
         html += leftover.map(u => `
           <div class="item"><div class="grow"><div class="title" style="font-size:12px;word-break:break-all">${esc(u)}</div></div>
             <button class="btn sm" data-url="${esc(u)}" data-sub="">Usar</button></div>`).join('');
@@ -1257,7 +1299,18 @@ function cameraWizard() {
       $$('[data-url]', box).forEach(b => b.onclick = () => {
         $('#w-url').value = b.dataset.url;
         if (b.dataset.sub) $('#w-sub').value = b.dataset.sub;
-        toast('URL puesta en el formulario');
+        // Si es iCSee/XMEye, precarga ONVIF (puerto 8899) para mover/zoom.
+        if (isIcseeUrl(b.dataset.url)) {
+          const info = icseeInfo(b.dataset.url);
+          $('#w-onvif').checked = true;
+          $('#w-onvif-box').style.display = '';
+          $('#w-ov-host').value = info.host;
+          $('#w-ov-port').value = 8899;
+          if (!info.username) { $('#w-ov-user').value = ''; $('#w-ov-pass').value = ''; }
+          toast('URL y ONVIF (8899) puestos en el formulario');
+        } else {
+          toast('URL puesta en el formulario');
+        }
       });
       $$('[data-probe]', box).forEach(b => b.onclick = () => discover('rtsp', b.dataset.probe));
     } catch (e) {
