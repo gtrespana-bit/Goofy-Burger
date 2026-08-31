@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import threading
 import time
 from abc import ABC, abstractmethod
 
@@ -103,8 +104,121 @@ class Cv2Source(Source):
             self.cap = None
 
 
+class FfmpegRTSPReader:
+    """Lector RTSP basado en el binario de ffmpeg (contenido en imageio-ffmpeg).
+
+    Es un respaldo muy útil para cámaras XMEye/iCSee: algunas URLs
+    ``user=...&password=...&channel=...`` que OpenCV no abre sí funcionan con
+    ffmpeg y ``-rtsp_transport tcp``. Lee frames BGR (bgr24) por el pipe y los
+    entrega como numpy arrays.
+    """
+
+    label = "rtsp-ffmpeg"
+    first_frame_timeout = 8.0  # segundos; evita colgarse con URLs que "abren" pero no envían vídeo
+
+    def __init__(self, url: str, width: int = 640, height: int = 480):
+        self.url = url
+        self.width = int(width or 640)
+        self.height = int(height or 480)
+        self.proc: Optional[subprocess.Popen] = None
+        self.frame_size = self.width * self.height * 3
+
+    @staticmethod
+    def _ffmpeg_bin() -> Optional[str]:
+        from shutil import which
+        found = which("ffmpeg") or which("ffmpeg.exe")
+        if found:
+            return found
+        try:
+            import imageio_ffmpeg  # type: ignore
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return None
+
+    def open(self) -> bool:
+        self.close()
+        exe = self._ffmpeg_bin()
+        if not exe:
+            return False
+        args = [
+            exe, "-hide_banner", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-fflags", "nobuffer", "-flags", "low_delay",
+            "-i", self.url,
+            "-f", "rawvideo", "-pix_fmt", "bgr24",
+            "-s", f"{self.width}x{self.height}",
+            "-",
+        ]
+        # stderr a DEVNULL: si la cámara empieza a escupir avisos y nos
+        # quedamos sin leerlos, el pipe se llena y ffmpeg se bloquea.
+        try:
+            self.proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                bufsize=self.frame_size,
+            )
+        except Exception:
+            self.proc = None
+            return False
+
+        # Esperamos el primer frame con timeout. ffmpeg puede tardar en
+        # negociar; pero si no llega, preferimos fallar pronto y avisar.
+        frames: List[Optional[np.ndarray]] = []
+        waiter = threading.Thread(
+            target=lambda: frames.append(self._read_raw()),
+            name="vigia-ffmpeg-first-frame",
+            daemon=True,
+        )
+        waiter.start()
+        waiter.join(self.first_frame_timeout)
+        if waiter.is_alive():
+            self.close()
+            return False
+        frame = frames[0] if frames else None
+        return frame is not None
+
+    def _read_raw(self) -> Optional[np.ndarray]:
+        if self.proc is None or self.proc.stdout is None or self.proc.poll() is not None:
+            return None
+        raw = self.proc.stdout.read(self.frame_size)
+        if not raw or len(raw) != self.frame_size:
+            return None
+        return np.frombuffer(raw, dtype=np.uint8).reshape(
+            (self.height, self.width, 3)
+        )
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        frame = self._read_raw()
+        return (True, frame) if frame is not None else (False, None)
+
+    def release(self) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self.proc is not None:
+            try:
+                self.proc.stdin.close()  # type: ignore[union-attr]
+            except Exception:
+                pass
+            try:
+                self.proc.kill()
+            except Exception:
+                pass
+            try:
+                self.proc.wait(timeout=1)
+            except Exception:
+                pass
+        self.proc = None
+
+
 class RtspSource(Cv2Source):
     label = "rtsp"
+    first_frame_timeout = 8.0
+
+    def __init__(self, camera: dict):
+        super().__init__(camera)
+        self.ffmpeg: Optional[FfmpegRTSPReader] = None
 
     def _build_target(self):
         cam = self.camera
@@ -113,6 +227,50 @@ class RtspSource(Cv2Source):
             return None
         url = with_credentials(url, cam.get("username", ""), cam.get("password", ""))
         return url
+
+    def open(self) -> bool:
+        target = self._build_target()
+        if target is None:
+            return False
+        # Primero intentamos con OpenCV (rápido y con buena resolución).
+        if super().open():
+            # Algunos backends OpenCV dicen "abierto" aunque la cámara no dé
+            # vídeo (sobre todo XMEye/iCSee). Esperamos un primer frame real;
+            # si no llega, soltamos OpenCV y probamos el lector ffmpeg.
+            frames: List[Tuple[bool, Optional[np.ndarray]]] = []
+            waiter = threading.Thread(
+                target=lambda: frames.append(super().read()),
+                name="vigia-opencv-first-frame",
+                daemon=True,
+            )
+            waiter.start()
+            waiter.join(self.first_frame_timeout)
+            if not waiter.is_alive() and frames and frames[0][0] and frames[0][1] is not None:
+                return True
+            self.release()  # liberamos el handle cv2 que no produce vídeo
+        # Respaldo con ffmpeg para cámaras iCSee/XMEye que OpenCV no abre o
+        # que se quedan "abiertas" sin enviar frames.
+        # Siempre usamos una resolución pequeña de trabajo; la grabación usa el
+        # flujo original con ffmpeg (record_url).
+        self.ffmpeg = FfmpegRTSPReader(target)
+        if self.ffmpeg.open():
+            return True
+        self.ffmpeg = None
+        return False
+
+    def read(self):
+        if self.ffmpeg is not None:
+            return self.ffmpeg.read()
+        return super().read()
+
+    def release(self):
+        super().release()
+        if self.ffmpeg is not None:
+            try:
+                self.ffmpeg.release()
+            except Exception:
+                pass
+            self.ffmpeg = None
 
     @property
     def record_url(self) -> str:

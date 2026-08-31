@@ -177,7 +177,7 @@ async function boot() {
     window.addEventListener('hashchange', route);
 
     await refresh(true);
-    route();
+    await route();
     setInterval(() => refresh(false), 5000);
     setInterval(checkNewEvents, 6000);
   } catch (err) {
@@ -187,13 +187,19 @@ async function boot() {
   }
 }
 
-function route() {
+async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
   const [view, param] = hash.split('/');
   state.view = view || 'dashboard';
   state.cameraId = view === 'camera' ? param : null;
   $$('#tabs .tab').forEach(t => t.classList.toggle('active', t.dataset.view === (view || 'dashboard')));
-  render();
+  try {
+    await render();
+  } catch (err) {
+    console.error('Error cargando vista', state.view, err);
+    $('#view').innerHTML = `<div class="panel empty"><span class="big">⚠️</span><p>No se pudo cargar la vista: ${esc(err.message)}</p><button class="btn" id="retry-view">Reintentar</button></div>`;
+    $('#retry-view').onclick = () => route();
+  }
 }
 
 async function refresh(full = false) {
@@ -212,7 +218,7 @@ async function refresh(full = false) {
     const sig = state.cameras.map(c => `${c.id}:${c.enabled ? 1 : 0}:${c.name}:${c.group}`).join('|');
     if (full || sig !== state.camSig) {
       state.camSig = sig;
-      render();
+      await render();
     } else {
       renderStatusOnly();
     }
@@ -249,13 +255,13 @@ function renderTopbar() {
 /* ------------------------------------------------------------------ */
 /* Vistas                                                              */
 /* ------------------------------------------------------------------ */
-function render() {
+async function render() {
   const view = state.view;
-  if (view === 'dashboard') return renderDashboard();
-  if (view === 'camera') return renderCamera();
-  if (view === 'events') return renderEvents();
-  if (view === 'recordings') return renderRecordings();
-  if (view === 'settings') return renderSettings();
+  if (view === 'dashboard') { renderDashboard(); return; }
+  if (view === 'camera') return await renderCamera();
+  if (view === 'events') return await renderEvents();
+  if (view === 'recordings') return await renderRecordings();
+  if (view === 'settings') return await renderSettings();
   renderDashboard();
 }
 
@@ -709,7 +715,7 @@ function wireEvents() {
   $$('[data-delev]').forEach(el => el.onclick = async e => {
     e.stopPropagation();
     await api(`/events/${el.dataset.delev}`, { method: 'DELETE' });
-    render();
+    await render();
   });
 }
 
@@ -740,7 +746,7 @@ function videoModal(path, title) {
     </div>`, { wide: true });
   $('[data-del]', $('#modal-body')).onclick = async e => {
     await api('/recordings?path=' + encodeURIComponent(e.target.dataset.del), { method: 'DELETE' });
-    toast('Grabación borrada'); closeModal(); render();
+    toast('Grabación borrada'); closeModal(); await render();
   };
 }
 
@@ -1078,6 +1084,48 @@ async function renderSettings() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Helpers de URLs RTSP / iCSee-XMEye                                 */
+/* ------------------------------------------------------------------ */
+// Detecta si una URL es de una cámara iCSee/XMEye (credenciales en la ruta).
+function isIcseeUrl(u) {
+  return /user=[^&/?\s]*&(?:password|passwd)=/i.test(u) ||
+         /user=[^_?\s]*(?:_password|_passwd)=/i.test(u) ||
+         /(?:^|[?&_])user=.*(?:^|[?&_])(?:password|passwd)=/i.test(u);
+}
+
+// Extrae host y credenciales de una URL iCSee/XMEye (user=..&password=..,
+// user=.._password=.., user=.._passwd=..).
+function icseeInfo(u) {
+  let host = '';
+  try { host = new URL(u).hostname; } catch {}
+  const um = /(?:^|[?&_/])user=([^&_?\s]*)/i.exec(u);
+  const pm = /(?:^|[?&_])?(?:password|passwd)=([^&_?\s]*)/i.exec(u);
+  return { host, username: um ? decodeURIComponent(um[1]) : '', password: pm ? decodeURIComponent(pm[1]) : '' };
+}
+
+// Rellena usuario/contraseña en una URL RTSP.
+// En iCSee/XMEye se escriben dentro del path; en el resto, en el usuario de la URL.
+function fillUrlCredentials(u, username, password) {
+  if (!u) return u;
+  const user = username || '', pass = password || '';
+  if (isIcseeUrl(u)) {
+    let out = u.replace(/(user=)([^&_?\s]*)/i, `$1${encodeURIComponent(user)}`);
+    out = out.replace(/([?&_])?(?:password|passwd)=[^&_?\s]*/i, `$1${pass ? 'password=' + encodeURIComponent(pass) : 'password='}`);
+    return out;
+  }
+  // URL estándar: si ya trae usuario, no la tocamos.
+  if (/([a-z]+):\/\/[^/@]+@/i.test(u)) return u;
+  try {
+    const parsed = new URL(u);
+    parsed.username = user;
+    parsed.password = pass;
+    return parsed.toString();
+  } catch {
+    return u;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* Asistente de alta de cámaras                                        */
 /* ------------------------------------------------------------------ */
 function cameraWizard() {
@@ -1164,22 +1212,6 @@ function cameraWizard() {
   $('#w-cancel').onclick = closeModal;
 
   // ---- autodescubrimiento ----
-  // Detecta si una URL es de una cámara iCSee/XMEye (credenciales en la ruta).
-  function isIcseeUrl(u) {
-    return /user=[^&/?\s]*&(?:password|passwd)=/i.test(u) ||
-           /user=[^_?\s]*(?:_password|_passwd)=/i.test(u) ||
-           /(?:^|[?&_])user=.*(?:^|[?&_])(?:password|passwd)=/i.test(u);
-  }
-  // Extrae host y credenciales de una URL iCSee/XMEye (user=..&password=..,
-  // user=.._password=.., user=.._passwd=..).
-  function icseeInfo(u) {
-    let host = '';
-    try { host = new URL(u).hostname; } catch {}
-    const um = /(?:^|[?&_/])user=([^&_?\s]*)/i.exec(u);
-    const pm = /(?:^|[?&_])?(?:password|passwd)=([^&_?\s]*)/i.exec(u);
-    return { host, username: um ? decodeURIComponent(um[1]) : '', password: pm ? decodeURIComponent(pm[1]) : '' };
-  }
-
   // Agrupa las URLs RTSP por canal (channel=N) y separa principal/secundario.
   // Las cámaras multi-lente (iCSee/XMEye) devuelven una URL por lente.
   // El canal 0, si responde, es la vista combinada (mosaico).
@@ -1226,13 +1258,23 @@ function cameraWizard() {
     const icsee = groups.some(g => isIcseeUrl(g.main || g.sub));
     let added = 0;
     for (const g of groups) {
-      const url = g.main || g.sub || '';
+      const rawUrl = g.main || g.sub || '';
+      // IMPORTANTE: las credenciales de RTSP pueden estar dentro de la propia
+      // URL y/o en el formulario. Para que quede bien guardado y visible,
+      // derivamos la cuenta de la URL (o de ONVIF si lo hay) y nunca dejamos
+      // el alta "sin usuario y contraseña".
+      const urlInfo = icseeInfo(rawUrl);
+      const rtspUser = urlInfo.username || (onvifInfo && onvifInfo.username) || '';
+      const rtspPass = urlInfo.password || (onvifInfo && onvifInfo.password) || '';
+      const url = fillUrlCredentials(rawUrl, rtspUser, rtspPass);
       const payload = {
         name: g.mosaic ? `${base} · mosaico` : `${base} · lente ${g.channel}`,
         group: grp,
         source_type: 'rtsp',
         url,
-        substream_url: g.sub || '',
+        substream_url: g.sub ? fillUrlCredentials(g.sub, rtspUser, rtspPass) : '',
+        username: rtspUser,
+        password: rtspPass,
       };
       if (onvifInfo && onvifInfo.onvif_port) {
         // Si conocemos el puerto ONVIF, sólo activamos PTZ en la lente que
@@ -1242,10 +1284,10 @@ function cameraWizard() {
         const enablePtz = knowPtz ? !!g.has_ptz : true;
         payload.onvif = {
           enabled: enablePtz,
-          host: onvifInfo.host || icseeInfo(url).host,
+          host: onvifInfo.host || urlInfo.host || '',
           port: +onvifInfo.onvif_port || 8899,
-          username: onvifInfo.username || '',
-          password: onvifInfo.password || '',
+          username: onvifInfo.username || rtspUser,
+          password: onvifInfo.password || rtspPass,
           profile_token: (g.has_ptz ? (g.profile_token || onvifInfo.ptz_profile_token) : ''),
           use_onvif_stream: false,
         };
@@ -1328,15 +1370,18 @@ function cameraWizard() {
       $$('[data-url]', box).forEach(b => b.onclick = () => {
         $('#w-url').value = b.dataset.url;
         if (b.dataset.sub) $('#w-sub').value = b.dataset.sub;
-        // Si es iCSee/XMEye, precarga ONVIF (puerto 8899) para mover/zoom.
+        // Si es iCSee/XMEye, precarga usuario/password y ONVIF para mover/zoom.
         if (isIcseeUrl(b.dataset.url)) {
           const info = icseeInfo(b.dataset.url);
+          $('#w-user').value = info.username;
+          $('#w-pass').value = info.password;
           $('#w-onvif').checked = true;
           $('#w-onvif-box').style.display = '';
           $('#w-ov-host').value = info.host;
           $('#w-ov-port').value = 8899;
-          if (!info.username) { $('#w-ov-user').value = ''; $('#w-ov-pass').value = ''; }
-          toast('URL y ONVIF (8899) puestos en el formulario');
+          $('#w-ov-user').value = info.username;
+          $('#w-ov-pass').value = info.password;
+          toast('URL, usuario y ONVIF (8899) puestos en el formulario');
         } else {
           toast('URL puesta en el formulario');
         }
@@ -1361,12 +1406,17 @@ function cameraWizard() {
     for (let i = 0; i < profiles.length; i++) {
       const p = profiles[i];
       if (!p.rtsp) continue;
+      // Las URLs que devuelve GetStreamUri suelen venir SIN usuario/contraseña.
+      // Para iCSee/XMEye hay que rellenarlo para que OpenCV/ffmpeg abra el flujo.
+      const url = fillUrlCredentials(p.rtsp, user, pass);
       const payload = {
         name: profiles.length > 1 ? `${base} · ${p.name || ('lente ' + (i + 1))}` : (base || 'Cámara'),
         group: grp,
         source_type: 'rtsp',
-        url: p.rtsp,
+        url,
         substream_url: '',
+        username: user || '',
+        password: pass || '',
         onvif: {
           enabled: !!p.has_ptz,
           host,
@@ -1517,6 +1567,8 @@ function cameraWizard() {
           const info = icseeInfo(url);
           const ov = r.onvif_profiles;
           const port = (channelInfo && channelInfo.onvif_port) || (ov && ov.port) || 8899;
+          $('#w-user').value = info.username;
+          $('#w-pass').value = info.password;
           $('#w-onvif').checked = true;
           $('#w-onvif-box').style.display = '';
           $('#w-ov-host').value = info.host;
@@ -1567,15 +1619,37 @@ function cameraWizard() {
 
   function collectForm() {
     const t = $('#w-type').value;
+    let url = t === 'rtsp' ? $('#w-url').value.trim()
+      : t === 'file' ? $('#w-file').value.trim() : '';
+    let sub = t === 'rtsp' ? $('#w-sub').value.trim() : '';
+    let user = t === 'rtsp' ? $('#w-user').value : '';
+    let pass = t === 'rtsp' ? $('#w-pass').value : '';
+
+    // Para iCSee/XMEye las credenciales suelen venir dentro de la URL. Si el
+    // usuario las dejó ahí y el formulario está vacío, las extraemos para
+    // guardarlas también en los campos separados. Y a la inversa: si puso
+    // usuario/contraseña en el formulario, las embebemos en la URL para que
+    // OpenCV/ffmpeg y la grabación funcionen aunque se pierdan los campos.
+    if (t === 'rtsp' && url) {
+      const info = icseeInfo(url);
+      user = user || info.username || '';
+      pass = pass !== '' ? pass : info.password;
+      if (url) {
+        url = (user || pass) ? fillUrlCredentials(url, user, pass) : url;
+      }
+      if (sub) {
+        sub = (user || pass) ? fillUrlCredentials(sub, user, pass) : sub;
+      }
+    }
+
     const payload = {
       name: $('#w-name').value.trim(),
       group: $('#w-group').value.trim() || 'General',
       source_type: t,
-      url: t === 'rtsp' ? $('#w-url').value.trim()
-        : t === 'file' ? $('#w-file').value.trim() : '',
-      substream_url: t === 'rtsp' ? $('#w-sub').value.trim() : '',
-      username: t === 'rtsp' ? $('#w-user').value : '',
-      password: t === 'rtsp' ? $('#w-pass').value : '',
+      url,
+      substream_url: sub,
+      username: t === 'rtsp' ? user : '',
+      password: t === 'rtsp' ? pass : '',
       device_index: t === 'usb' ? +$('#w-index').value : 0,
       device_name: t === 'usb' ? $('#w-devname').value.trim() : '',
     };
@@ -1630,15 +1704,28 @@ async function cameraSettings(id) {
 
   $('#c-cancel').onclick = closeModal;
   $('#c-save').onclick = async () => {
+    let url = $('#c-url').value.trim();
+    let sub = $('#c-sub').value.trim();
+    let user = $('#c-user').value;
+    let pass = $('#c-pass').value;
+    // Igual que en el asistente: mantener las credenciales tanto en los campos
+    // como dentro de la URL, para que la fuente RTSP y la grabación las usen.
+    if (url) {
+      const info = icseeInfo(url);
+      user = user || info.username || '';
+      pass = pass !== '' ? pass : info.password;
+      url = (user || pass) ? fillUrlCredentials(url, user, pass) : url;
+    }
+    if (sub) sub = (user || pass) ? fillUrlCredentials(sub, user, pass) : sub;
     await api(`/cameras/${id}`, {
       method: 'PATCH',
       body: {
         name: $('#c-name').value,
         group: $('#c-group').value,
-        url: $('#c-url').value,
-        substream_url: $('#c-sub').value,
-        username: $('#c-user').value,
-        password: $('#c-pass').value,
+        url,
+        substream_url: sub,
+        username: user,
+        password: pass,
         alerts: {
           enabled: $('#c-alerts').checked,
           only_when_away: $('#c-away').checked,
