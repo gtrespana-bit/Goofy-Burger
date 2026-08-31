@@ -6,32 +6,100 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# En PyInstaller con console=False, estos pueden ser None. Los reemplazamos
+# por os.devnull antes de que uvicorn configure su logging.
+_std_replacements = ()
+
+
+def _safe_data_dir() -> Path:
+    """Carpeta de datos estable, con un fallback sencillo si app.config fallase."""
+    env = os.environ.get("VIGIA_DATA_DIR")
+    if env:
+        return Path(env).expanduser().resolve()
+    try:
+        from app import config as app_config  # noqa: E402
+
+        return Path(app_config.default_data_dir()).resolve()
+    except Exception:
+        if os.name == "nt":
+            root = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+            return (Path(root) / "Vigia").resolve()
+        if sys.platform == "darwin":
+            return (Path.home() / "Library" / "Application Support" / "Vigia").resolve()
+        return (Path.home() / ".local" / "share" / "vigia").resolve()
+
 
 def _prepare_std_streams() -> None:
-    """En modo ventana (PyInstaller ``console=False``) stdout/stderr/stdin
-    son ``None`` y uvicorn falla al configurar sus formatters/handlers.
-
-    Los reemplazamos por ``os.devnull`` para que uvicorn y el logging propio no
-    se caigan. El log detallado sigue guardándose en ``%APPDATA%\\Vigia\\logs``
-    (ver ``app.logging_setup``).
-    """
+    """Reemplaza stdout/stderr/stdin por os.devnull si son None."""
+    global _std_replacements
+    if _std_replacements:
+        return
     args = {"encoding": "utf-8", "errors": "replace"}
+    current: list = []
     for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
         stream = getattr(sys, name, None)
         if stream is None:
-            setattr(sys, name, open(os.devnull, mode, **args))
+            stream = open(os.devnull, mode, **args)
+            setattr(sys, name, stream)
+        current.append(stream)
+    _std_replacements = tuple(current)
+
+
+def _log_startup_running() -> Path:
+    """Deja constancia del arranque en data/logs/vigia-startup.log."""
+    log_dir = _safe_data_dir() / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        marker = log_dir / "vigia-startup.log"
+        with marker.open("a", encoding="utf-8", errors="replace") as fh:
+            fh.write(
+                f"[{__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S}] "
+                "Vigia iniciando...\n"
+            )
+        return marker
+    except Exception:
+        return Path()
+
+
+def _report_unhandled_error() -> int:
+    """Guardia de errores para el .exe sin consola.
+
+    Aunque no haya consola, escribe el traceback en ``%APPDATA%\\Vigia\\logs``
+    y, en Windows, muestra un diálogo con el resumen para que el fallo no sea
+    invisible.
+    """
+    exc_text = traceback.format_exc()
+    log_dir = _safe_data_dir() / "logs"
+    log_path = log_dir / "startup_error.log"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8", errors="replace") as fh:
+            fh.write(
+                f"[{__import__('datetime').datetime.now():%Y-%m-%d %H:%M:%S}]\n"
+                f"{exc_text}\n"
+            )
+    except Exception:
+        pass
+
+    summary = "Vigia no ha podido arrancar.\n\nRevisa:\n" + str(log_path)
+    try:
+        import ctypes  # type: ignore
+
+        ctypes.windll.user32.MessageBoxW(0, summary, "Vigia - error de arranque", 0x10)  # type: ignore
+    except Exception:
+        pass
+    return 1
 
 
 def _default_data_dir() -> str:
     """Carpeta de datos por defecto, igual que en app.config (aquí sin cargar
     la app para poder lanzar el navegador antes/después)."""
-    from app import config as app_config  # noqa: E402
-
-    return str(app_config.default_data_dir())
+    return str(_safe_data_dir())
 
 
 def _open_browser(url: str, delay: float = 1.5) -> None:
@@ -50,11 +118,7 @@ def _open_browser(url: str, delay: float = 1.5) -> None:
     threading.Thread(target=_open, daemon=True).start()
 
 
-def main() -> None:
-    # Debe ejecutarse antes de usar stdout/stderr o crear la Config de uvicorn:
-    # en un .exe empaquetado como ventana (console=False) son None.
-    _prepare_std_streams()
-
+def _run_main() -> None:
     parser = argparse.ArgumentParser(description="Vigía - videovigilancia casera")
     parser.add_argument("--host", default=os.environ.get("VIGIA_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.environ.get("VIGIA_PORT", 8000)))
@@ -76,21 +140,88 @@ def main() -> None:
         # Asegura la carpeta de datos estable también para el ejecutable.
         os.environ.setdefault("VIGIA_DATA_DIR", _default_data_dir())
 
-    if not args.reload and not args.no_browser:
-        _open_browser(f"http://127.0.0.1:{args.port}/")
+    if args.reload:
+        import uvicorn
+
+        uvicorn.run(
+            "app.main:app",
+            host=args.host,
+            port=args.port,
+            reload=True,
+            log_level="info",
+            access_log=False,
+            use_colors=False,
+        )
+        return
+
+    # Sin reload: usamos uvicorn.Server para poder distinguir un arranque real
+    # de un fallo silencioso (p. ej. puerto 8000 ocupado) en el .exe sin consola.
+    import threading
+    import time
 
     import uvicorn
 
-    uvicorn.run(
+    config = uvicorn.Config(
         "app.main:app",
         host=args.host,
         port=args.port,
-        reload=args.reload,
         log_level="info",
         access_log=False,
         use_colors=False,
     )
+    server = uvicorn.Server(config)
+    thread_errors: list[str] = []
+
+    def _server_run():
+        try:
+            server.run()
+        except BaseException:
+            thread_errors.append(traceback.format_exc())
+            raise
+
+    thread = threading.Thread(target=_server_run, daemon=True)
+    thread.start()
+
+    deadline = time.time() + 15
+    while (time.time() < deadline
+           and not server.started
+           and not server.should_exit
+           and thread.is_alive()):
+        time.sleep(0.1)
+
+    if not server.started:
+        detail = (
+            f"Servidor en http://{args.host}:{args.port}\n"
+            "Posible causa: el puerto ya esta en uso o la inicio fallo.\n\n"
+            "Si el puerto 8000 esta ocupado, cierra otro Vigia o lanzalo con:\n"
+            "Vigia.exe --port 8001"
+        )
+        if thread_errors:
+            detail += "\n\nDetalle del error:\n" + thread_errors[-1]
+        raise RuntimeError(detail)
+
+    if not args.no_browser:
+        _open_browser(f"http://127.0.0.1:{args.port}/")
+
+    thread.join()
+
+
+def main() -> int:
+    # Deja marca de arranque Y prepara los streams antes de crear la Config de
+    # uvicorn. Si algo falla antes de llegar a uvicorn, lo capturamos y lo
+    # guardamos/dialogamos en vez de cerrar la ventana en silencio.
+    _log_startup_running()
+    _prepare_std_streams()
+    try:
+        _run_main()
+    except KeyboardInterrupt:
+        return 0
+    except SystemExit:
+        raise
+    except BaseException:
+        return _report_unhandled_error()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

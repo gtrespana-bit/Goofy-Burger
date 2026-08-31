@@ -86,6 +86,13 @@ El instalador:
   `os.devnull` y apaga los colores de uvicorn, así que la app arranca sin
   ventana de consola y guarda sus logs en `%APPDATA%\Vigia\logs\vigia.log`.
   Es necesario **volver a compilar** el `.exe` con el código corregido.
+- **Al hacer doble clic en `Vigia.exe` no se ve nada** — si el `.exe` es una
+  aplicación sin consola, un fallo de arranque parecía no mostrar nada. Ahora
+  el arranque deja una marca en
+  `%APPDATA%\Vigia\logs\vigia-startup.log` y cualquier excepción se guarda en
+  `%APPDATA%\Vigia\logs\startup_error.log` además de mostrar un aviso en
+  Windows. Si el puerto 8000 está ocupado, el aviso indica que puedes cerrar
+  la otra instancia o lanzar `Vigia.exe --port 8001`.
 
 ## macOS / Linux
 
