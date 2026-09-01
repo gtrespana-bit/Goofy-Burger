@@ -1028,7 +1028,7 @@ async function renderCamera() {
     </div>
 
     <div>
-      ${cam.onvif?.enabled ? ptzPanel(cam) : ''}
+      ${ptzHasControl(cam) ? ptzPanel(cam) : ''}
       <div class="panel">
         <div class="spread"><h3>Últimos eventos</h3>
           <button class="btn sm ghost" id="cam-all-events">Ver todos</button></div>
@@ -1077,12 +1077,17 @@ async function renderCamera() {
   };
   $('#det-on').onchange = () => {};
   wireEvents();
-  if (cam.onvif?.enabled) wirePtz(cam);
+  if (ptzHasControl(cam)) wirePtz(cam);
+}
+
+function ptzHasControl(cam) {
+  return !!(cam.onvif?.enabled || (cam.dvrip?.enabled && cam.dvrip?.ptz_enabled));
 }
 
 function ptzPanel(cam) {
+  const dvripOnly = !!(cam.dvrip?.enabled && cam.dvrip?.ptz_enabled) && !cam.onvif?.enabled;
   return `<div class="panel">
-    <h3>Control PTZ</h3>
+    <h3>Control PTZ${dvripOnly ? ' <span style="font-weight:400;font-size:12px">· DVRIP</span>' : ''}</h3>
     <div class="ptz">
       <span></span>
       <button data-ptz="0,0.5" title="Arriba">↑</button>
@@ -1094,40 +1099,54 @@ function ptzPanel(cam) {
       <button data-ptz="0,-0.5" title="Abajo">↓</button>
       <button data-ptz="0,1" title="Zoom -">－</button>
     </div>
-    <div class="row">
+    ${dvripOnly ? '' : `<div class="row">
       <select id="presets"><option value="">Presets…</option></select>
       <button class="btn sm" id="btn-gopreset">Ir</button>
       <button class="btn sm ghost" id="btn-home">Posición inicial</button>
-    </div>
+    </div>`}
   </div>`;
 }
 
 function wirePtz(cam) {
+  // Mantén pulsado para mover en continuo; suelta para detener. También
+  // funciona con un simple clic (un paso corto).
   $$('[data-ptz]').forEach(btn => {
-    btn.onclick = async () => {
+    let timer = null;
+    const send = () => {
       const raw = btn.dataset.ptz;
-      try {
-        if (raw === 'stop') await api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'stop' } });
-        else {
-          const [pan, tilt] = raw.split(',').map(Number);
-          await api(`/cameras/${cam.id}/ptz`, {
-            method: 'POST',
-            body: { action: 'move', pan: pan * 0.6, tilt: -tilt * 0.6, zoom: Math.abs(tilt) === 1 ? tilt : 0, duration: 0.5 },
-          });
-        }
-      } catch (e) { toast(e.message, 'err'); }
+      if (raw === 'stop') return api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'stop' } });
+      const [pan, tilt] = raw.split(',').map(Number);
+      const isZoom = pan === 0 && Math.abs(tilt) === 1;
+      return api(`/cameras/${cam.id}/ptz`, {
+        method: 'POST',
+        body: isZoom
+          ? { action: 'move', pan: 0, tilt: 0, zoom: tilt, duration: 0.4 }
+          : { action: 'move', pan: pan * 0.6, tilt: -tilt * 0.6, zoom: 0, duration: 0.4 },
+      });
     };
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      send().catch(err => toast(err.message, 'err'));
+      if (btn.dataset.ptz !== 'stop') {
+        timer = setInterval(() => send().catch(() => {}), 280);
+      }
+    });
+    const clear = () => { if (timer) { clearInterval(timer); timer = null; } };
+    btn.addEventListener('pointerup', clear);
+    btn.addEventListener('pointerleave', clear);
+    btn.addEventListener('pointercancel', clear);
   });
-  $('#btn-home').onclick = () => api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'home' } })
+  const homeBtn = $('#btn-home');
+  if (homeBtn) homeBtn.onclick = () => api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'home' } })
     .then(() => toast('Yendo a la posición inicial')).catch(e => toast(e.message, 'err'));
-  $('#btn-gopreset').onclick = () => {
+  const goBtn = $('#btn-gopreset');
+  if (goBtn) goBtn.onclick = () => {
     const token = $('#presets').value;
     if (token) api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'preset', preset: token } })
       .catch(e => toast(e.message, 'err'));
   };
-  api(`/cameras/${cam.id}/ptz/presets`).then(data => {
-    const sel = $('#presets');
-    if (!sel) return;
+  const sel = $('#presets');
+  if (sel) api(`/cameras/${cam.id}/ptz/presets`).then(data => {
     (data.presets || []).forEach(p => {
       sel.insertAdjacentHTML('beforeend', `<option value="${esc(p.token)}">${esc(p.name)}</option>`);
     });

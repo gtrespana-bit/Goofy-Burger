@@ -265,11 +265,33 @@ def _ptz_blocking(camera: Dict[str, Any], req: PtzRequest):
     return {"ok": True}
 
 
+def _dvrip_ptz(camera: Dict[str, Any], req: PtzRequest):
+    """PTZ nativo DVRIP: reutiliza la conexión en vivo del worker (la cámara
+    suele aceptar una sola sesión; abrir otra daría 'ya conectado')."""
+    worker = manager.worker(camera["id"])
+    source = getattr(worker, "source", None) if worker is not None else None
+    # RtspSource puede llevar un DvripSource interno como respaldo.
+    source = getattr(source, "dvrip_fallback", None) or source
+    if source is None or not hasattr(source, "ptz"):
+        raise HTTPException(409, "La cámara no tiene una conexión DVRIP activa para PTZ")
+    ok, err = source.ptz(
+        req.action, pan=req.pan, tilt=req.tilt, zoom=req.zoom,
+        preset=req.preset, duration=req.duration,
+    )
+    if not ok:
+        raise HTTPException(400, err or "No se pudo enviar el comando PTZ")
+    return {"ok": True}
+
+
 @router.post("/{camera_id}/ptz")
 def ptz_control(camera_id: str, req: PtzRequest):
     camera = config.get_camera(camera_id)
     if not camera:
         raise HTTPException(404, "Cámara no encontrada")
+    dvrip_cfg = camera.get("dvrip") or {}
+    if dvrip_cfg.get("enabled") or camera.get("source_type") == "dvrip":
+        # Control nativo por DVRIP (la vía por la que se añadió la cámara).
+        return _dvrip_ptz(camera, req)
     if not onvif_client.ONVIF_AVAILABLE:
         raise HTTPException(400, "Instala la dependencia ONVIF: pip install onvif-zeep")
     try:

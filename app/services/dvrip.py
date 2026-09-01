@@ -16,6 +16,7 @@ asistente te avisará de que el soporte nativo iCSee no está disponible.
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import time
@@ -24,6 +25,11 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger("vigia.dvrip")
 
 DVRIP_PORT = 34567
+
+# Tipos de mensaje DVRIP que la librería `dvrip` NO expone (los mandamos crudos):
+DVRIP_KEEPALIVE = 1006       # {"Name":"KeepAlive","SessionID":"0x..."}
+DVRIP_PTZ_CTRL = 1400        # OPPTZControl (mover/zoom de la lente giratoria)
+DVRIP_MEDIA_VIDEO = 1412     # paquetes de vídeo del canal monitorizado
 
 try:
     from dvrip import DVRIP_PORT as _LIB_PORT  # type: ignore
@@ -419,7 +425,9 @@ def stream_channel(host: str, username: str, password: str, channel: int,
         client = DVRIPClient(control_sock)
         client.login(username or "", password or "")
         data_sock = socket.create_connection((host, int(port or DVRIP_PORT)), timeout=timeout)
-        data_sock.settimeout(timeout)
+        # El socket de datos lleva vídeo en continuo; un timeout generoso sirve
+        # para detectar un flujo muerto sin falsos reconexiones.
+        data_sock.settimeout(max(10.0, timeout))
         raw = client.monitor(data_sock, int(channel), Stream.HD if stream != "sub" else Stream.SD)
         return client, data_sock, control_sock, raw
     except Exception:
@@ -435,3 +443,88 @@ def stream_channel(host: str, username: str, password: str, channel: int,
             except Exception:
                 pass
         raise
+
+
+def _session_id_hex(client) -> str:
+    session = getattr(client, "session", None)
+    sid = int(getattr(session, "id", 0) or 0)
+    return "0x%08X" % sid
+
+
+def send_control(client, control_sock, type_id: int, payload: Dict[str, Any]) -> bool:
+    """Envía un mensaje de control DVRIP crudo por el socket de control.
+
+    La librería `dvrip` no expone KeepAlive ni PTZ, así que empaquetamos el
+    mensaje igual que ``ControlMessage.topackets`` (versión 1, JSON ascii) y lo
+    escribimos en el mismo fichero que usa el cliente. No espera respuesta.
+    """
+    if client is None:
+        return False
+    try:
+        from dvrip.packet import Packet
+    except Exception:  # pragma: no cover
+        return False
+    if getattr(client, "session", None) is None:
+        return False
+    try:
+        body = json.dumps(payload, separators=(",", ":")).encode("ascii")
+        # Número de secuencia creciente, continuando el contador que ya usó la
+        # librería durante el handshake (login/systeminfo/monitor). El cliente
+        # usa __slots__, así que reutilizamos `number` en lugar de añadir campos.
+        num = int(getattr(client, "number", 0) or 0) + 2
+        try:
+            client.number = num
+        except Exception:  # pragma: no cover
+            pass
+        pkt = Packet(
+            session=int(getattr(client.session, "id", 0) or 0),
+            number=num, type=int(type_id), payload=body,
+            fragments=0, fragment=0,
+        )
+        file = getattr(client, "file", None)
+        if file is None:
+            file = control_sock.makefile("wb", buffering=0)
+        pkt.dump(file)
+        return True
+    except Exception:
+        return False
+
+
+def keepalive(client, control_sock) -> bool:
+    """Envía un KeepAlive (evita que la cámara corte la sesión/el vídeo)."""
+    return send_control(client, control_sock, DVRIP_KEEPALIVE, {
+        "Name": "KeepAlive",
+        "SessionID": _session_id_hex(client),
+    })
+
+
+_PTZ_COMMANDS = {
+    "up": "DirectionUp",
+    "down": "DirectionDown",
+    "left": "DirectionLeft",
+    "right": "DirectionRight",
+    "zoom_in": "ZoomTile",
+    "zoom_out": "ZoomWide",
+    "goto_preset": "GotoPreset",
+}
+
+
+def ptz_control(client, control_sock, command: str, channel: int = 0,
+                step: int = 5, preset: int = -1) -> bool:
+    """Mueve/hace zoom en la lente giratoria vía DVRIP (OPPTZControl)."""
+    if command not in _PTZ_COMMANDS:
+        return False
+    parameter = {
+        "AUX": {"Number": 0, "Status": "On"},
+        "Channel": int(channel or 0),
+        "MenuOpts": "Enter",
+        "Pattern": "Start",
+        "Preset": int(preset),
+        "Step": int(step),
+        "Tour": 0,
+    }
+    return send_control(client, control_sock, DVRIP_PTZ_CTRL, {
+        "Name": "OPPTZControl",
+        "SessionID": _session_id_hex(client),
+        "OPPTZControl": {"Command": _PTZ_COMMANDS[command], "Parameter": parameter},
+    })
