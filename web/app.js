@@ -3230,6 +3230,7 @@ async function cameraSettings(id) {
   const det = cam.detection || {};
   const alerts = cam.alerts || {};
   const ov = cam.overlay || {};
+  const video = cam.video || {};
   const isRtsp = cam.source_type === 'rtsp';
   const isDvrip = cam.source_type === 'dvrip';
   const camDvrip = cam.dvrip || {};
@@ -3343,6 +3344,20 @@ async function cameraSettings(id) {
         ${['top-left','top-right','bottom-left','bottom-right'].map(p => `<option value="${p}" ${ov.position === p ? 'selected' : ''}>${p}</option>`).join('')}
       </select></div>
       <div class="field"><label>Tamaño</label><input type="number" min="0.3" max="2" step="0.1" id="c-ov-scale" value="${ov.font_scale ?? 0.7}"></div>
+    </div>
+
+    <div class="divider"></div>
+    <h4>🔄 Orientación de la imagen</h4>
+    <div class="form-grid">
+      <div class="field"><label>Rotación</label><select id="c-vid-rot">
+        <option value="0" ${(video.rotate || 0) === 0 ? 'selected' : ''}>Sin rotar</option>
+        <option value="90" ${video.rotate === 90 ? 'selected' : ''}>90° (horario)</option>
+        <option value="180" ${video.rotate === 180 ? 'selected' : ''}>180° (boca abajo)</option>
+        <option value="270" ${video.rotate === 270 ? 'selected' : ''}>270° (antihorario)</option>
+      </select></div>
+      <label class="checkline"><input type="checkbox" id="c-vid-fliph" ${video.flip_h ? 'checked' : ''}> Espejo horizontal</label>
+      <label class="checkline"><input type="checkbox" id="c-vid-flipv" ${video.flip_v ? 'checked' : ''}> Espejo vertical</label>
+      <div class="field grid-span2"><span class="hint">Si la cámara sale al revés, elige <b>180°</b>. Se aplica al directo, grabaciones y detección.</span></div>
     </div>
 
     <div class="divider"></div>
@@ -3465,6 +3480,11 @@ async function cameraSettings(id) {
       location: $('#c-ov-loc').checked,
       position: $('#c-ov-pos').value,
       font_scale: +$('#c-ov-scale').value,
+    };
+    payload.video = {
+      rotate: +$('#c-vid-rot').value || 0,
+      flip_h: $('#c-vid-fliph').checked,
+      flip_v: $('#c-vid-flipv').checked,
     };
     await api(`/cameras/${id}`, { method: 'PATCH', body: payload });
     toast('Cámara actualizada'); closeModal(); refresh(true);

@@ -152,6 +152,17 @@ class OverlayConfig(BaseModel):
     font_scale: float = 0.7
 
 
+class VideoConfig(BaseModel):
+    """Orientación de la imagen (corrige cámaras montadas al revés o en espejo).
+
+    ``rotate`` en grados (0, 90, 180, 270) y espejo horizontal/vertical. Se
+    aplica al directo, la grabación, las instantáneas y la detección.
+    """
+    rotate: int = 0            # 0 | 90 | 180 | 270
+    flip_h: bool = False       # espejo horizontal
+    flip_v: bool = False       # espejo vertical
+
+
 class LineConfig(BaseModel):
     id: str = ""
     name: str = ""
@@ -314,6 +325,7 @@ def build_camera(payload: Dict[str, Any], defaults: Dict[str, Any]) -> Dict[str,
         "color": payload.get("color", ""),
         "order": int(payload.get("order", 0) or 0),
         "overlay": {**OverlayConfig().model_dump(), **(payload.get("overlay") or {})},
+        "video": {**VideoConfig().model_dump(), **(payload.get("video") or {})},
         "onvif": {**OnvifConfig().model_dump(), **(payload.get("onvif") or {})},
         "dvrip": {**DvripConfig().model_dump(), **(payload.get("dvrip") or {})},
         "detection": {**DetectionConfig().model_dump(), **det, **(payload.get("detection") or {})},

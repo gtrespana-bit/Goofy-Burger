@@ -78,7 +78,8 @@ class SegmentRecorder:
     def __init__(self, camera: dict, source, out_dir: Path, segment_seconds: int = 300,
                  codec: str = "copy", audio: bool = False, quality: str = "medium",
                  crf: int = 23, preset: str = "veryfast", bitrate: str = "",
-                 width: int = 0, height: int = 0, fps: int = 0):
+                 width: int = 0, height: int = 0, fps: int = 0,
+                 rotate: int = 0, flip_h: bool = False, flip_v: bool = False):
         self.camera = camera
         self.source = source
         self.out_dir = out_dir
@@ -92,6 +93,9 @@ class SegmentRecorder:
         self.width = int(width or 0)
         self.height = int(height or 0)
         self.fps = int(fps or 0)
+        self.rotate = int(rotate or 0) % 360
+        self.flip_h = bool(flip_h)
+        self.flip_v = bool(flip_v)
         self.proc: Optional[subprocess.Popen] = None
         self.last_start = 0.0
         self.last_error = ""
@@ -105,6 +109,29 @@ class SegmentRecorder:
             "medium": (23, "veryfast"),
             "low": (28, "ultrafast"),
         }.get(quality or "medium", (23, "veryfast"))
+
+    def _rotation_filters(self) -> List[str]:
+        """Filtros ffmpeg equivalentes a la orientación cv2 del worker.
+
+        Debe coincidir con ``CameraWorker._orient_frame`` (rotar primero y luego
+        espejos), para que la grabación continua salga igual que el directo:
+          - 90°  -> transpose=1 (horario)
+          - 180° -> hflip,vflip
+          - 270° -> transpose=2 (antihorario)
+          - flip_h -> hflip ; flip_v -> vflip
+        """
+        parts: List[str] = []
+        if self.rotate == 90:
+            parts.append("transpose=1")
+        elif self.rotate == 180:
+            parts.append("hflip,vflip")
+        elif self.rotate == 270:
+            parts.append("transpose=2")
+        if self.flip_h:
+            parts.append("hflip")
+        if self.flip_v:
+            parts.append("vflip")
+        return parts
 
     # ---------- construcción del comando ----------
     def build_cmd(self) -> Optional[List[str]]:
@@ -121,9 +148,23 @@ class SegmentRecorder:
         else:
             args += ["-an"]
 
-        # "Desea recodificar" si hay resolución/fps/bitrate explícitos: copiar
-        # no puede cambiar esas cosas.
-        force_reencode = bool(self.width or self.height or self.fps or self.bitrate)
+        # Cadena de filtros: escala (si se pide) + rotación/espejo.
+        vf_parts: List[str] = []
+        if self.width and self.height:
+            vf_parts.append(
+                f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,"
+                f"pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2"
+            )
+        elif self.width:
+            vf_parts.append(f"scale={self.width}:-2")
+        elif self.height:
+            vf_parts.append(f"scale=-2:{self.height}")
+        vf_parts.extend(self._rotation_filters())
+        vf = ",".join(vf_parts)
+
+        # "Desea recodificar" si hay resolución/fps/bitrate/rotación explícitos:
+        # copiar no puede aplicar filtros.
+        force_reencode = bool(self.width or self.height or self.fps or self.bitrate or vf)
         if self.codec == "copy" and not force_reencode:
             args += ["-c:v", "copy"]
         else:
@@ -134,12 +175,8 @@ class SegmentRecorder:
                      "-pix_fmt", "yuv420p"]
             if self.bitrate:
                 args += ["-b:v", self.bitrate]
-            if self.width and self.height:
-                args += ["-vf", f"scale={self.width}:{self.height}:force_original_aspect_ratio=decrease,pad={self.width}:{self.height}:(ow-iw)/2:(oh-ih)/2"]
-            elif self.width:
-                args += ["-vf", f"scale={self.width}:-2"]
-            elif self.height:
-                args += ["-vf", f"scale=-2:{self.height}"]
+            if vf:
+                args += ["-vf", vf]
             if self.fps:
                 args += ["-r", str(self.fps)]
 

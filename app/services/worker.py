@@ -20,7 +20,7 @@ from .. import events_store
 from ..config import DATA_DIR, clips_dir, config, recordings_dir, snapshots_dir
 from ..models import is_schedule_active, slugify
 from ..events_store import make_event
-from .capture import build_source
+from .capture import build_source, orient_frame
 from .detector import AIDetector, MotionDetector
 from .framebus import frame_bus
 from .pusher import send_push
@@ -120,9 +120,22 @@ class CameraWorker(threading.Thread):
     def _clips_dir(self) -> Path:
         return clips_dir() / slugify(self.id)
 
+    def _orient_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Aplica rotación/espejo configurados en la cámara (``video``).
+
+        Corrige cámaras montadas al revés (180°), de lado (90°/270°) o en
+        espejo. Se llama ANTES de overlay/detección/grabación, así que todo
+        (directo, clips, instantáneas y analítica) sale en la orientación buena.
+        """
+        return orient_frame(self.camera, frame)
+
     def _setup_recorders(self) -> None:
         rec = self.camera.get("recording") or {}
         mode = rec.get("mode", "continuous")
+        video = self.camera.get("video") or {}
+        rotate = int(video.get("rotate", 0) or 0) % 360
+        flip_h = bool(video.get("flip_h"))
+        flip_v = bool(video.get("flip_v"))
         continuous_modes = {"continuous", "smart", "scheduled"}
         if mode in continuous_modes:
             if self.segment is None:
@@ -140,6 +153,9 @@ class CameraWorker(threading.Thread):
                     width=int(rec.get("width", 0) or 0),
                     height=int(rec.get("height", 0) or 0),
                     fps=int(rec.get("fps", 0) or 0),
+                    rotate=rotate,
+                    flip_h=flip_h,
+                    flip_v=flip_v,
                 )
             else:
                 for k in ("segment_seconds", "codec", "audio", "quality", "crf",
@@ -148,6 +164,9 @@ class CameraWorker(threading.Thread):
                         self.segment.segment_seconds = max(10, int(rec.get(k, 300)))
                     else:
                         setattr(self.segment, k, rec.get(k, getattr(self.segment, k)))
+                self.segment.rotate = rotate
+                self.segment.flip_h = flip_h
+                self.segment.flip_v = flip_v
         elif self.segment is not None:
             self.segment.stop()
             self.segment = None
@@ -179,6 +198,7 @@ class CameraWorker(threading.Thread):
     def apply_config(self, camera: Dict[str, Any]) -> None:
         """Aplica cambios de configuración en caliente."""
         prev_rec = self.camera.get("recording") or {}
+        prev_video = self.camera.get("video") or {}
         prev_src = self.camera.get("source_type"), self.camera.get("url"), \
             self.camera.get("substream_url"), self.camera.get("device_index")
         self.camera = dict(camera)
@@ -208,12 +228,18 @@ class CameraWorker(threading.Thread):
                 imgsz=int(det.get("ai_imgsz", 640) or 640),
             )
         new_rec = camera.get("recording") or {}
+        new_video = camera.get("video") or {}
         new_src = camera.get("source_type"), camera.get("url"), \
             camera.get("substream_url"), camera.get("device_index")
         source_changed = prev_src != new_src
         mode_changed = prev_rec.get("mode") != new_rec.get("mode")
+        video_changed = (
+            (prev_video.get("rotate", 0) or 0) != (new_video.get("rotate", 0) or 0)
+            or bool(prev_video.get("flip_h")) != bool(new_video.get("flip_h"))
+            or bool(prev_video.get("flip_v")) != bool(new_video.get("flip_v"))
+        )
         self._setup_recorders()
-        if source_changed or mode_changed:
+        if source_changed or mode_changed or (video_changed and self.segment is not None):
             if self.segment is not None:
                 self.segment.stop()
                 self.segment.source = self.source or build_source(self.camera)
@@ -315,6 +341,8 @@ class CameraWorker(threading.Thread):
                 no_frame_backoff = 1.0
                 self.status["last_error"] = ""
                 self._last_logged_error = ""
+                # Orientación (rotación/espejo) antes de procesar el frame.
+                frame = self._orient_frame(frame)
                 frames += 1
                 fps_count += 1
                 self.status["state"] = "running"
@@ -435,6 +463,7 @@ class CameraWorker(threading.Thread):
         for _ in range(15):
             ok, frame = self.source.read()
             if ok and frame is not None:
+                frame = self._orient_frame(frame)
                 h, w = frame.shape[:2]
                 self.status["resolution"] = f"{w}x{h}"
                 frame_bus.publish(self.id, frame, quality=PREVIEW_QUALITY)

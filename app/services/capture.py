@@ -906,6 +906,7 @@ def probe_snapshot(camera: dict, timeout: float = 8.0) -> Tuple[bool, Optional[n
         while time.time() < deadline:
             ok, frame = src.read()
             if ok and frame is not None:
+                frame = orient_frame(camera, frame)
                 return True, frame, ""
             time.sleep(0.1)
         return False, None, "Tiempo de espera agotado sin recibir imagen"
@@ -916,6 +917,27 @@ def probe_snapshot(camera: dict, timeout: float = 8.0) -> Tuple[bool, Optional[n
             src.release()
         except Exception:
             pass
+
+
+def orient_frame(camera: dict, frame: np.ndarray) -> np.ndarray:
+    """Aplica la rotación/espejo de ``camera.video`` a un frame (compartida).
+
+    Se usa en el worker, en el sondeo de snapshot y en cualquier lectura que
+    deba salir con la orientación correcta (rotación 90/180/270 + espejos).
+    """
+    cfg = camera.get("video") or {}
+    rotate = int(cfg.get("rotate", 0) or 0) % 360
+    if rotate == 90:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rotate == 180:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+    elif rotate == 270:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if cfg.get("flip_h"):
+        frame = cv2.flip(frame, 1)
+    if cfg.get("flip_v"):
+        frame = cv2.flip(frame, 0)
+    return frame
 
 
 def usb_device_names_windows() -> List[str]:  # pragma: no cover - sólo Windows
