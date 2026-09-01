@@ -437,6 +437,41 @@ def group_rtsp_channels(urls: List[str]) -> Dict:
     return {"groups": ordered, "leftover": leftover}
 
 
+def _rtsp_distinguishes_lenses(channels: Dict, host: str, timeout: float) -> Optional[bool]:
+    """¿Los canales RTSP devuelven flujos distintos o todos la misma lente?
+
+    Muchas iCSee/XMEye (XiongMai) ignoran ``channel=1/2/3`` en RTSP y devuelven
+    SIEMPRE la lente principal: así, al añadir "Lente 1, 2, 3" por RTSP salen
+    tres copias de la misma cámara. Comparamos el SDP de cada canal: si son
+    idénticos (salvo el identificador de sesión ``o=``), la cámara no distingue
+    lentes por RTSP y hay que usar ONVIF o DVRIP.
+
+    Devuelve ``True`` (distinguen), ``False`` (no distinguen) o ``None`` (no se
+    pudo comprobar: sin canales, sin credenciales o sin respuesta SDP).
+    """
+    groups = [g for g in (channels or {}).get("groups", []) if not g.get("mosaic") and g.get("main")]
+    if len(groups) < 2:
+        return None
+    sdps = []
+    for g in groups:
+        try:
+            res = rtsp_describe(g["main"], timeout=timeout)
+        except Exception:
+            return None
+        sdp = (res.get("sdp") or "") if res.get("ok") else ""
+        if not sdp:
+            return None
+        # El campo o= lleva un identificador de sesión único por conexión;
+        # no cuenta a la hora de comparar el contenido de vídeo.
+        norm = "\n".join(
+            line for line in sdp.splitlines() if not line.startswith("o=")
+        )
+        sdps.append(norm)
+    if not sdps:
+        return None
+    return len(set(sdps)) > 1
+
+
 # --------------------------------------------------------------------------
 # 4. Diagnóstico de una IP (iCSee / XMEye)
 # --------------------------------------------------------------------------
@@ -513,6 +548,9 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
             )
 
     report["channels"] = group_rtsp_channels(report.get("rtsp", []))
+    report["channels"]["rtsp_distinguishes_lenses"] = _rtsp_distinguishes_lenses(
+        report["channels"], host, rtsp_timeout
+    )
 
     port_open = {p: p in opened for p in [80, 8080, 8899, 34567, 554]}
 
@@ -548,11 +586,18 @@ def diagnose_camera(host: str, username: str = "", password: str = "",
             "Si sólo funcionan las de 'admin' sin contraseña, usa esa cuenta "
             "para RTSP (independiente de la cuenta con la que entras en la app iCSee)."
         )
+        if report.get("channels", {}).get("rtsp_distinguishes_lenses") is False:
+            report["hints"].append(
+                "AVISO: los canales RTSP de esta cámara devuelven TODOS la misma "
+                "lente (el firmware no distingue lentes por el parámetro channel). "
+                "Para ver las lentes por separado NO uses RTSP: añade por "
+                "DVRIP/NetIP (puerto 34567) o por ONVIF (perfiles)."
+            )
     else:
         if report["rtsp_admin_empty"]:
             report["hints"].append(
                 "RTSP responde con admin/contraseña vacía, pero no con tus "
-                "credenciales (Ruben). La cuenta RTSP de las iCSee/XMEye suele "
+                "credenciales. La cuenta RTSP de las iCSee/XMEye suele "
                 "ser 'admin' sin contraseña, DISTINTA de la de la app. "
                 "Pega una URL con 'user=admin&password=' directamente."
             )

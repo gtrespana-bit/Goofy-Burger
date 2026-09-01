@@ -2924,14 +2924,15 @@ function cameraWizard() {
           <div class="grow">
             <div class="title">📷 iCSee multi-lente vía DVRIP/NetIP: ${dv.channels} lente(s)</div>
             <div class="meta">Puerto 34567 · ${esc(dv.device?.hardware || '')} ${esc(dv.device?.software || '')} · ${hasPtz ? 'una lente con PTZ.' : 'PTZ vía ONVIF no detectado.'}</div>
+            <div class="meta" style="margin-top:4px">¿Cuántas lentes tiene? <input type="number" id="w-dv-count" min="1" max="8" value="${dv.lenses.length}" style="width:56px"> <button class="btn sm" id="w-dv-refresh-count">Aplicar</button></div>
           </div>
-          <button class="btn sm primary" id="w-add-dvrip">➕ Añadir los ${dv.lenses.length}</button>
+          <button class="btn sm primary" id="w-add-dvrip">➕ Añadir los <span id="w-dv-count-label">${dv.lenses.length}</span></button>
         </div>`;
-        html += dv.lenses.map(l => `<div class="item"><div class="grow">
+        html += `<div id="w-dv-lens-list">` + dv.lenses.map(l => `<div class="item"><div class="grow">
           <div class="title" style="font-size:12px">${esc(l.label)}${l.recording ? ' · grabando' : ''}${(ovInfo && (ovInfo.profiles[+l.index]?.has_ptz)) ? '<span style="color:var(--accent,#3ddc97)"> · PTZ</span>' : ''}</div>
           <div class="meta" style="font-size:11px">Canal DVRIP ${+l.index} · ${l.bitrate_kbps} kbit/s</div>
         </div>
-        <button class="btn sm" data-dvrip-use="${esc(l.index)}">Usar</button></div>`).join('');
+        <button class="btn sm" data-dvrip-use="${esc(l.index)}">Usar</button></div>`).join('') + `</div>`;
       }
 
       const channels = r.channels && r.channels.groups ? r.channels : null;
@@ -3008,8 +3009,28 @@ function cameraWizard() {
       const addDv = $('#w-add-dvrip', box);
       if (addDv) {
         const dv = r.dvrip;
+        // Permite forzar el número de lentes si la cámara no lo informa bien:
+        // construye una lista de N lentes (índices 0..N-1) a partir del input.
+        const buildLenses = () => {
+          const n = Math.max(1, Math.min(8, parseInt($('#w-dv-count', box)?.value, 10) || (dv.lenses?.length || 1)));
+          const out = [];
+          for (let i = 0; i < n; i++) {
+            const existing = (dv.lenses || []).find(l => +l.index === i);
+            out.push(existing || { index: i, channel: i + 1, label: `Lente ${i + 1}`, bitrate_kbps: 0, recording: false });
+          }
+          return out;
+        };
+        const refreshCount = () => {
+          const n = Math.max(1, Math.min(8, parseInt($('#w-dv-count', box)?.value, 10) || (dv.lenses?.length || 1)));
+          const label = $('#w-dv-count-label', box);
+          if (label) label.textContent = n;
+        };
+        const countInput = $('#w-dv-count', box);
+        if (countInput) countInput.addEventListener('input', refreshCount);
+        const refreshBtn = $('#w-dv-refresh-count', box);
+        if (refreshBtn) refreshBtn.onclick = refreshCount;
         addDv.onclick = () => addAllDvrip(
-          ip, dvUser, dvPass, dv.lenses,
+          ip, dvUser, dvPass, buildLenses(),
           r.onvif_profiles && r.onvif_profiles.profiles ? { ...r.onvif_profiles, password: !!r.onvif_profiles.password } : null
         );
       }
