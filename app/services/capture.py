@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 import re
+import select
 import struct
 import subprocess
 import threading
@@ -302,13 +303,13 @@ class DvripSource(Source):
 
     label = "dvrip"
     first_frame_timeout = 6.0
+    read_timeout = 5.0  # segundos sin datos de ffmpeg antes de declarar el flujo muerto
 
     def __init__(self, camera: dict):
         super().__init__(camera)
         self.client = None
         self.control_sock = None
         self.data_sock = None
-        self.raw = None
         self._ff_proc: Optional[subprocess.Popen] = None
         self._writer: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -383,7 +384,7 @@ class DvripSource(Source):
             self._stop.clear()
             self._codec = codec
             try:
-                client, data_sock, control_sock, raw = stream_channel(
+                client, data_sock, control_sock = stream_channel(
                     cfg["host"], cfg["username"], cfg["password"], cfg["channel"],
                     port=cfg["port"], stream=cfg["stream"],
                 )
@@ -392,9 +393,7 @@ class DvripSource(Source):
 
                 last_error = friendly_login_error(exc) or f"{type(exc).__name__}: {exc}"
                 continue
-            self.client, self.data_sock, self.control_sock, self.raw = (
-                client, data_sock, control_sock, raw
-            )
+            self.client, self.data_sock, self.control_sock = (client, data_sock, control_sock)
 
             prefix = b""
             if cfg["codec"] == "auto":
@@ -436,6 +435,13 @@ class DvripSource(Source):
             self._ff_proc = subprocess.Popen(
                 [
                     exe, "-hide_banner", "-nostdin", "-loglevel", "error",
+                    # Sin estos flags, ffmpeg hace "probing" del pipe de
+                    # entrada (probesize por defecto ~5 MB / analyzeduration
+                    # 5 s) y no entrega ni un frame hasta completarlo. En un
+                    # directo DVRIP el pipe no llega nunca a ese tamaño y el
+                    # vídeo se queda sin imagen o congelado en el primer frame.
+                    "-fflags", "nobuffer", "-flags", "low_delay",
+                    "-probesize", "32", "-analyzeduration", "0",
                     "-f", demux, "-i", "-",
                     "-f", "image2pipe", "-vcodec", "bmp", "-",
                 ],
@@ -469,7 +475,7 @@ class DvripSource(Source):
 
     def _wait_first_frame(self) -> None:
         try:
-            frame = self._read_one_frame(block=False)
+            frame = self._read_one_frame()
             if frame is not None:
                 self._got_frame = True
         except Exception:
@@ -478,21 +484,26 @@ class DvripSource(Source):
     def _sniff_codec(self, max_bytes: int = 262144) -> Tuple[Optional[str], bytes]:
         """Lee el inicio del flujo para decidir h264/hevc antes de arrancar ffmpeg.
 
-        Devuelve ``(codec, prefijo)``; el prefijo son los bytes ya consumidos
-        que hay que reinyectar a ffmpeg para no perder fotogramas.
+        Devuelve ``(codec, prefijo)``; el prefijo son los NAL ya consumidos
+        (sin cabeceras de trama) que hay que reinyectar a ffmpeg.
         """
-        if self.raw is None:
+        if self.data_sock is None:
             return None, b""
+        from .dvrip import DVRIP_MEDIA_VIDEO, read_media_packet, strip_media_header
+
         buf = b""
         while len(buf) < max_bytes and not self._stop.is_set():
             try:
-                chunk = self.raw.read(min(8192, max_bytes - len(buf)))
+                typ, payload = read_media_packet(self.data_sock)
             except Exception:
                 # Timeout, paquete vacío o cierre: salimos con lo que haya.
                 break
-            if not chunk:
-                break
-            buf += chunk
+            if typ != DVRIP_MEDIA_VIDEO:
+                continue
+            data = strip_media_header(payload)
+            if not data:
+                continue
+            buf += data
             codec = _detect_stream_codec(buf)
             if codec:
                 return codec, buf
@@ -537,45 +548,78 @@ class DvripSource(Source):
                 pass
 
     def _feed_ffmpeg(self) -> None:
-        if not self._ff_proc or not self.raw:
+        if not self._ff_proc or self.data_sock is None:
             return
+        from .dvrip import DVRIP_MEDIA_VIDEO, read_media_packet, strip_media_header
+
         errs = 0
+        stdin = self._ff_proc.stdin
         try:
             while not self._stop.is_set():
                 try:
-                    chunk = self.raw.read(65536)
-                except OSError:
-                    # Timeout del socket de datos: el flujo puede reanudarse
-                    # (p. ej. tras un GOP largo). Reintentamos sin matar el
-                    # decodificador ni perder la sesión.
-                    time.sleep(0.05)
-                    continue
+                    typ, payload = read_media_packet(self.data_sock)
+                except (TimeoutError, EOFError):
+                    # Flujo muerto o dispositivo desconectado: fin de datos.
+                    break
                 except Exception:
-                    # Paquete no-vídeo / mal formado: lo saltamos, salvo que sea
-                    # continuo (evita un bucle infinito de errores).
+                    # Paquete mal formado: lo saltamos, salvo que sea continuo
+                    # (evita un bucle infinito de errores).
                     errs += 1
                     if errs > 200:
                         break
                     continue
                 errs = 0
-                if not chunk:
-                    break  # EOF: el dispositivo cerró el flujo
-                if self._ff_proc.stdin is not None:
-                    self._ff_proc.stdin.write(chunk)
-                    self._ff_proc.stdin.flush()
+                if typ != DVRIP_MEDIA_VIDEO:
+                    continue
+                data = strip_media_header(payload)
+                if not data:
+                    continue
+                if stdin is not None:
+                    stdin.write(data)
+                    stdin.flush()
         except Exception:
             pass
+        finally:
+            # Cerramos el stdin de ffmpeg cuando se acaban los datos: así
+            # ffmpeg ve EOF, entrega los últimos frames pendientes y termina,
+            # y `read()` deja de bloquearse esperando un flujo muerto.
+            try:
+                if stdin is not None:
+                    stdin.close()
+            except Exception:
+                pass
 
-    def _read_exact(self, n: int) -> Optional[bytes]:
+    def _read_exact(self, n: int, timeout: Optional[float] = None) -> Optional[bytes]:
+        """Lee exactamente ``n`` bytes de la salida de ffmpeg con timeout.
+
+        Sin timeout, un flujo muerto (ffmpeg vivo pero sin frames) dejaría el
+        ``read()`` del worker bloqueado para siempre y la última imagen quedaría
+        congelada en la UI. Con timeout devolvemos ``None`` y el worker puede
+        reconectar.
+        """
         if self._ff_proc is None or self._ff_proc.stdout is None:
             return None
+        if timeout is None:
+            timeout = self.read_timeout
         buf = bytearray()
+        deadline = time.time() + timeout
         while len(buf) < n and not self._stop.is_set():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                ready, _, _ = select.select(
+                    [self._ff_proc.stdout], [], [], min(remaining, 0.5)
+                )
+            except (ValueError, OSError):  # pragma: no cover - sin select (Windows)
+                ready = [self._ff_proc.stdout]
+            if not ready:
+                continue
             chunk = self._ff_proc.stdout.read(n - len(buf))
             if not chunk:
                 return None if not buf else bytes(buf)
             buf.extend(chunk)
-        return bytes(buf[:n])
+        return bytes(buf) if len(buf) >= n else None
 
     @staticmethod
     def _parse_bmp(data: bytes) -> Optional[np.ndarray]:
@@ -595,17 +639,17 @@ class DvripSource(Source):
         except Exception:
             return None
 
-    def _read_one_frame(self, block: bool = True) -> Optional[np.ndarray]:
+    def _read_one_frame(self, timeout: Optional[float] = None) -> Optional[np.ndarray]:
         """Lee un BMP de la salida de ffmpeg; devuelve un frame BGR."""
         if self._ff_proc is None:
             return None
-        header = self._read_exact(14)
+        header = self._read_exact(14, timeout=timeout)
         if not header or len(header) < 14:
             return None
         size = struct.unpack("<I", header[2:6])[0]
         if size <= 14:
             return None
-        body = self._read_exact(size - 14)
+        body = self._read_exact(size - 14, timeout=timeout)
         if not body or len(body) < size - 14:
             return None
         return self._parse_bmp(header + body)
@@ -708,12 +752,6 @@ class DvripSource(Source):
             except Exception:
                 pass
         self._ff_proc = None
-        if self.raw is not None:
-            try:
-                self.raw.close()
-            except Exception:
-                pass
-        self.raw = None
         if self.data_sock is not None:
             try:
                 self.data_sock.close()
@@ -723,9 +761,11 @@ class DvripSource(Source):
         # Serializa logout/cierre con los comandos de control (keep-alive/PTZ)
         # que escriben en el mismo socket, para no intercalar bytes a medias.
         with self._ctl_lock:
-            if self.client is not None:
+            if self.client is not None and self.control_sock is not None:
                 try:
-                    self.client.logout()
+                    from .dvrip import logout
+
+                    logout(self.client, self.control_sock)
                 except Exception:
                     pass
             self.client = None

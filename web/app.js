@@ -1081,11 +1081,13 @@ async function renderCamera() {
 }
 
 function ptzHasControl(cam) {
-  return !!(cam.onvif?.enabled || (cam.dvrip?.enabled && cam.dvrip?.ptz_enabled));
+  // El PTZ nativo DVRIP (OPPTZControl) no necesita ONVIF ni un flag extra:
+  // basta con que la cámara esté añadida por DVRIP para poder moverla.
+  return !!(cam.onvif?.enabled || cam.dvrip?.enabled);
 }
 
 function ptzPanel(cam) {
-  const dvripOnly = !!(cam.dvrip?.enabled && cam.dvrip?.ptz_enabled) && !cam.onvif?.enabled;
+  const dvripOnly = !!cam.dvrip?.enabled && !cam.onvif?.enabled;
   return `<div class="panel">
     <h3>Control PTZ${dvripOnly ? ' <span style="font-weight:400;font-size:12px">· DVRIP</span>' : ''}</h3>
     <div class="ptz">

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import struct
 import time
 from typing import Any, Dict, List, Optional
 
@@ -30,16 +31,27 @@ DVRIP_PORT = 34567
 DVRIP_KEEPALIVE = 1006       # {"Name":"KeepAlive","SessionID":"0x..."}
 DVRIP_PTZ_CTRL = 1400        # OPPTZControl (mover/zoom de la lente giratoria)
 DVRIP_MEDIA_VIDEO = 1412     # paquetes de vídeo del canal monitorizado
+DVRIP_LOGOUT = 1002          # {"Name":"","SessionID":"0x..."} (mismo que ClientLogout)
+
+# Firmas de trama dentro del payload de un paquete 1412 (protocolo Sofia/XM):
+# cada frame viene precedido de "00 00 01" + un byte de tipo. El resto de los
+# paquetes son "continuación" de un frame y llevan NAL en bruto.
+MEDIA_SIG = b"\x00\x00\x01"
+MEDIA_IFRAME = 0xFC          # cabecera de 16 bytes + NAL
+MEDIA_PFRAME = 0xFD          # cabecera de 8 bytes + NAL
+MEDIA_PLUSENC = 0xF9         # como I-Frame (H.264+/H.265+)
+MEDIA_AUDIO = 0xFA           # descartar (audio G.711)
 
 try:
     from dvrip import DVRIP_PORT as _LIB_PORT  # type: ignore
-    from dvrip.io import DVRIPClient  # type: ignore
+    from dvrip.io import DVRIPClient, DVRIPConnection  # type: ignore
     from dvrip.monitor import Stream  # type: ignore
 
     DVRIP_AVAILABLE = True
     DVRIP_ERROR = ""
 except Exception as exc:  # pragma: no cover - entorno
     DVRIPClient = None  # type: ignore
+    DVRIPConnection = None  # type: ignore
     Stream = None  # type: ignore
     DVRIP_AVAILABLE = False
     DVRIP_ERROR = str(exc)
@@ -406,12 +418,42 @@ def discover(timeout: float = 2.5, interface: Optional[str] = None) -> List[Dict
     return out
 
 
+def _monitor_start(client, data_sock, channel: int, stream: str) -> None:
+    """Arranca el monitor (claim + request) como ``DVRIPClient.monitor``, pero
+    sin envolver el socket de datos en un ``DVRIPReader``: el llamador lee los
+    paquetes de vídeo directamente con ``read_media_packet``.
+
+    La razón es que ``DVRIPReader``/``streamfilter`` terminan el flujo cuando
+    llega un paquete con el flag ``end`` (fin de trama), que en vídeo en vivo
+    se pone en cada frame, no al final del stream. Aquí evitamos ese bug.
+    """
+    from dvrip.errors import DVRIPRequestError  # type: ignore
+    from dvrip.monitor import (DoMonitor, Monitor, MonitorAction,  # type: ignore
+                               MonitorClaim, MonitorParams)
+
+    monitor = Monitor(
+        action=MonitorAction.START,
+        params=MonitorParams(
+            channel=int(channel),
+            stream=Stream.HD if stream != "sub" else Stream.SD,
+        ),
+    )
+    claim = MonitorClaim(session=client.session, monitor=monitor)
+    request = DoMonitor(session=client.session, monitor=monitor)
+    data = DVRIPConnection(data_sock, client.session)
+    data.send(data.number, claim)
+    client.request(request)
+    reply = data.recv(claim.replies(data.number))
+    DVRIPRequestError.signal(claim, reply)
+
+
 def stream_channel(host: str, username: str, password: str, channel: int,
                    port: int = DVRIP_PORT, stream: str = "main",
                    timeout: float = 4.0) -> tuple:
     """Abre un flujo de vídeo por canal.
 
-    Devuelve ``(client, data_sock, control_sock, raw_stream)`` o lanza.
+    Devuelve ``(client, data_sock, control_sock)`` con el monitor ya arrancado;
+    el socket de datos queda listo para leer paquetes con ``read_media_packet``.
     El llamador debe cerrarlos todos.
     """
     if not DVRIP_AVAILABLE:
@@ -428,8 +470,8 @@ def stream_channel(host: str, username: str, password: str, channel: int,
         # El socket de datos lleva vídeo en continuo; un timeout generoso sirve
         # para detectar un flujo muerto sin falsos reconexiones.
         data_sock.settimeout(max(10.0, timeout))
-        raw = client.monitor(data_sock, int(channel), Stream.HD if stream != "sub" else Stream.SD)
-        return client, data_sock, control_sock, raw
+        _monitor_start(client, data_sock, int(channel), stream)
+        return client, data_sock, control_sock
     except Exception:
         for obj in (data_sock, control_sock):
             if obj is not None:
@@ -443,6 +485,64 @@ def stream_channel(host: str, username: str, password: str, channel: int,
             except Exception:
                 pass
         raise
+
+
+def _recv_exact(sock, n: int) -> bytes:
+    """Lee exactamente ``n`` bytes del socket. Lanza EOFError/TimeoutError."""
+    buf = bytearray()
+    while len(buf) < n:
+        try:
+            chunk = sock.recv(n - len(buf))
+        except socket.timeout:
+            raise TimeoutError("timeout leyendo el socket de datos DVRIP")
+        if not chunk:
+            raise EOFError("socket de datos DVRIP cerrado")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def read_media_packet(sock) -> tuple:
+    """Lee el siguiente paquete DVRIP del socket de datos.
+
+    Devuelve ``(type_id, payload)``. Lanza ``EOFError`` si el dispositivo
+    cierra el socket y ``TimeoutError`` si se agota el timeout sin datos.
+    """
+    header = _recv_exact(sock, 20)
+    if header[0] != 0xFF:
+        raise ValueError(f"cabecera DVRIP inválida (0x{header[0]:02X})")
+    typ = struct.unpack("<H", header[14:16])[0]
+    length = struct.unpack("<I", header[16:20])[0]
+    if length > 8 * 1024 * 1024:
+        raise ValueError(f"paquete DVRIP demasiado grande ({length} bytes)")
+    payload = _recv_exact(sock, length) if length else b""
+    return typ, payload
+
+
+def strip_media_header(payload: bytes) -> Optional[bytes]:
+    """Devuelve los NAL de un payload 1412 sin la cabecera de trama.
+
+    Formato Sofia/XM (confirmado con node_dvripclient):
+
+    - ``00 00 01 FC`` (I-Frame) y ``00 00 01 F9`` (PlusEnc): cabecera 16 bytes.
+    - ``00 00 01 FD`` (P-Frame): cabecera 8 bytes.
+    - ``00 00 01 FA`` (Audio): se descarta (devuelve ``None``).
+    - Sin prefijo ``00 00 01``: paquete de continuación, NAL en bruto.
+
+    Estas cabeceras, si se pasan a ffmpeg, corrompen el flujo y el directo se
+    queda en el primer fotograma (vídeo estático).
+    """
+    if payload[:3] != MEDIA_SIG:
+        return payload  # continuación de trama
+    kind = payload[3]
+    if kind == MEDIA_AUDIO:
+        return None
+    if kind in (MEDIA_IFRAME, MEDIA_PLUSENC):
+        return payload[16:] if len(payload) > 16 else b""
+    if kind == MEDIA_PFRAME:
+        return payload[8:] if len(payload) > 8 else b""
+    # Prefijo 00 00 01 con tipo desconocido: probablemente un paquete de
+    # continuación que casualmente empieza por 00 00 01; lo pasamos tal cual.
+    return payload
 
 
 def _session_id_hex(client) -> str:
@@ -494,6 +594,21 @@ def keepalive(client, control_sock) -> bool:
     """Envía un KeepAlive (evita que la cámara corte la sesión/el vídeo)."""
     return send_control(client, control_sock, DVRIP_KEEPALIVE, {
         "Name": "KeepAlive",
+        "SessionID": _session_id_hex(client),
+    })
+
+
+def logout(client, control_sock) -> bool:
+    """Envía el logout sin esperar respuesta.
+
+    ``client.logout()`` (de la librería) se bloquea esperando la respuesta y
+    muchas cámaras no la envían; además, si hay replies de keep-alive/PTZ sin
+    leer, ``recv`` falla con "stray packet". El logout fire-and-forget cierra
+    la sesión igual (la cámara libera el canal al cerrarse el socket) y no
+    ralentiza el cleanup/reconexión.
+    """
+    return send_control(client, control_sock, DVRIP_LOGOUT, {
+        "Name": "",
         "SessionID": _session_id_hex(client),
     })
 
