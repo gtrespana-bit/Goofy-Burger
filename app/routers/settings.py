@@ -208,6 +208,9 @@ def factory_reset(payload: Dict[str, Any] = Body(default={})):
                 base.mkdir(parents=True, exist_ok=True)
             except Exception:
                 pass
+        from ..services.retention import invalidate_storage_cache
+
+        invalidate_storage_cache()
     config.reset()
     manager.sync([])
     return {"ok": True, "cameras": 0, "auth_enabled": False}

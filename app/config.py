@@ -219,25 +219,52 @@ def _clean_camera_url(url: str) -> str:
         return url
 
 
+def _bare_host(host: str) -> str:
+    """Host sin puerto ni decoración (``host``, ``host:34567`` -> ``host``)."""
+    host = (host or "").strip().lower()
+    if not host:
+        return ""
+    try:
+        return (urlsplit("//" + host).hostname or "").strip().lower()
+    except Exception:
+        return host
+
+
 def camera_source_key(cam: Dict[str, Any]) -> Tuple:
     """Clave del dispositivo-canal real de una cámara.
 
-    Sirve para no crear/arrancar el mismo dispositivo-canal dos veces
-    (el motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
+    Sirve para no crear/arrancar el mismo dispositivo-canal dos veces (el
+    motivo de que aparecieran 10 cámaras al añadir dos veces una iCSee
     multi-lente).
+
+    IMPORTANTE: la clave distingue la vía (RTSP vs DVRIP). Una lente añadida
+    por RTSP y por DVRIP son entradas distintas: si las unificásemos, al
+    reintentar "añadir por RTSP" se detectaría como duplicada una cámara DVRIP
+    ya existente y el alta se bloquearía (la cámara "no se agrega"). Sólo se
+    deduplican duplicados de la MISMA vía.
     """
     st = cam.get("source_type") or "rtsp"
     if st == "dvrip":
         dv = cam.get("dvrip") or {}
-        return ("dvrip", str(dv.get("host", "")).lower(), int(dv.get("channel", -1) or -1))
+        host = _bare_host(str(dv.get("host", "") or ""))
+        channel = int(dv.get("channel", -1) or -1)  # 0-based (0 = primera lente)
+        return ("dvrip", host, channel)
+
     url = cam.get("url") or ""
-    host = (urlsplit(url).hostname or "").lower()
-    if host:
-        m = re.search(r"[?&_]channel=(\d+)", url, re.I)
-        if m:
-            return ("channel", host, m.group(1))
-        return ("url", host, _clean_camera_url(url))
-    return ("url", "", _clean_camera_url(url))
+    host = _bare_host(urlsplit(url).hostname or "")
+    if not host:
+        return ("url", "", _clean_camera_url(url))
+
+    # URL dvrip://host:port/channel=N (N 1-based) -> clave dvrip
+    if urlsplit(url).scheme.lower() == "dvrip":
+        m = re.search(r"channel=(\d+)", url, re.I)
+        channel = int(m.group(1)) - 1 if m else -1
+        return ("dvrip", host, channel)
+
+    m = re.search(r"[?&_]channel=(\d+)", url, re.I)
+    if m:
+        return ("channel", host, m.group(1))
+    return ("url", host, _clean_camera_url(url))
 
 
 def _camera_quality(cam: Dict[str, Any]) -> int:

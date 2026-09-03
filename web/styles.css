@@ -149,7 +149,7 @@ main{padding:18px 20px 60px;max-width:1600px;margin:0 auto}
 .player{position:relative;background:#000;border-radius:var(--radius);overflow:hidden;aspect-ratio:16/9}
 .player img{width:100%;height:100%;object-fit:contain;display:block}
 .ptz{display:grid;grid-template-columns:repeat(3,44px);grid-template-rows:repeat(3,44px);gap:6px;justify-content:center;margin:10px 0}
-.ptz button{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;cursor:pointer;font-size:16px}
+.ptz button{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;cursor:pointer;font-size:16px;touch-action:none;user-select:none;-webkit-user-select:none}
 .ptz button:hover{background:#25333f}
 .ptz .center{display:grid;place-items:center;font-size:11px;color:var(--txt-faint)}
 

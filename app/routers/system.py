@@ -15,6 +15,9 @@ import cv2
 from fastapi import APIRouter, Body, HTTPException, Query
 from pydantic import BaseModel
 
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as _FutureTimeout
+
 from ..config import DATA_DIR, config
 from ..services import discovery, dvrip, onvif_client, pusher
 from ..services.capture import list_usb_devices
@@ -24,6 +27,28 @@ from ..services.retention import storage_stats
 from .. import events_store
 
 router = APIRouter(prefix="/system", tags=["system"])
+
+# El diagnóstico sondea la red (puertos, RTSP, DVRIP y ONVIF). Para que el
+# endpoint devuelva SIEMPRE una respuesta en un tiempo acotado (y la UI no
+# acabe en "Tiempo de espera agotado"), cada fase corre en un hilo con límite.
+DIAGNOSE_TIMEOUT = 60.0
+ONVIF_PROBE_TIMEOUT = 15.0
+
+
+def _run_with_timeout(fn, seconds: float, *args, **kwargs):
+    """Ejecuta `fn` en un hilo y devuelve su resultado o None si excede `seconds`.
+
+    El hilo que se queda colgado no se espera (shutdown(wait=False)); para un
+    NVR local es aceptable: como mucho se pierde un hilo por diagnóstico.
+    """
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(fn, *args, **kwargs)
+        return future.result(timeout=seconds)
+    except _FutureTimeout:
+        return None
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 START_TIME = time.time()
 VERSION = "1.0.1"
@@ -83,13 +108,28 @@ def _log_files() -> List[dict]:
     return out
 
 
+# `import ultralytics` arrastra torch y puede tardar varios segundos. Se hacía
+# en CADA /system/info (sondeado cada 5 s) y en /system/diagnostics, agotando
+# el pool de hilos de uvicorn y encolando el resto de peticiones (por eso todo
+# parecía lento o daba errores). La disponibilidad no cambia en caliente: se
+# comprueba una vez y se cachea.
+_ultra_cache = {"ts": 0.0, "val": False}
+_ULTRA_TTL = 300.0
+
+
 def _ultralytics_available() -> bool:
+    now = time.time()
+    if (now - _ultra_cache["ts"]) < _ULTRA_TTL:
+        return bool(_ultra_cache["val"])
     try:
         import ultralytics  # noqa: F401
 
-        return True
+        val = True
     except Exception:
-        return False
+        val = False
+    _ultra_cache["ts"] = now
+    _ultra_cache["val"] = val
+    return val
 
 
 @router.get("/info")
@@ -236,19 +276,40 @@ def diagnose(req: DiscoverRequest):
     if not req.target:
         raise HTTPException(400, "Indica la IP de la cámara en 'target'")
     try:
-        report = discovery.diagnose_camera(
-            req.target, req.username, req.password,
+        report = _run_with_timeout(
+            discovery.diagnose_camera,
+            DIAGNOSE_TIMEOUT,
+            req.target,
+            req.username,
+            req.password,
             timeout=max(0.8, req.timeout / 3),
             rtsp_timeout=max(1.2, req.timeout / 3),
         )
+        if report is None:
+            # No dejamos colgada la UI: devolvemos un informe mínimo con pistas.
+            return {
+                "host": (req.target or "").strip(),
+                "ports": [],
+                "rtsp": [],
+                "rtsp_admin_empty": [],
+                "channels": {"groups": [], "leftover": []},
+                "hints": [
+                    "El diagnóstico tardó demasiado. Comprueba que la cámara "
+                    "está encendida y en la misma red, y vuelve a intentarlo."
+                ],
+            }
         # Si ONVIF está abierto, enumera perfiles (multi-lente) con su stream.
         # No limitamos a 8899: probamos 80/8080/8000/8899 automáticamente.
+        # La enumeración ONVIF puede colgarse (la cámara no siempre responde al
+        # WSDL), así que la corremos con un tiempo máximo propio.
         if onvif_client.ONVIF_AVAILABLE and (
             any(p["open"] for p in report.get("ports", [])
                 if p["port"] in (80, 8080, 8000, 8899))
         ):
-            onvif_info = _probe_onvif_profiles(
-                req.target, req.username, req.password
+            onvif_info = _run_with_timeout(
+                _probe_onvif_profiles,
+                ONVIF_PROBE_TIMEOUT,
+                req.target, req.username, req.password,
             )
             if onvif_info:
                 report["onvif_profiles"] = onvif_info
@@ -257,9 +318,8 @@ def diagnose(req: DiscoverRequest):
                 )
             else:
                 report["hints"].append(
-                    "Hay un puerto ONVIF abierto pero no se pudieron leer "
-                    "perfiles con esas credenciales. Prueba con 'admin' y la "
-                    "contraseña de admin de la cámara (no la de la app)."
+                    "Hay un puerto ONVIF abierto pero no respondió a tiempo; "
+                    "se omite la enumeración de perfiles ONVIF."
                 )
         return report
     except HTTPException:

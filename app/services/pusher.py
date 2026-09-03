@@ -22,17 +22,28 @@ except Exception as exc:  # pragma: no cover
     PUSH_ERROR = str(exc)
 
 
+# `import pywebpush` (arrastra cryptography) es caro y se ejecutaba en cada
+# /push/status, /system/info y /diagnostics. Se comprueba una vez y se cachea.
+_avail_cache = {"ts": 0.0, "val": None}
+AVAIL_TTL = 120.0
+
+
 def available() -> bool:
     global PUSH_AVAILABLE, PUSH_ERROR
+    now = time.time()
+    cached = _avail_cache.get("val")
+    if cached is not None and (now - _avail_cache["ts"]) < AVAIL_TTL:
+        return bool(cached)
     try:
         import pywebpush  # noqa: F401
         PUSH_AVAILABLE = True
         PUSH_ERROR = ""
-        return True
     except Exception as exc:
         PUSH_AVAILABLE = False
         PUSH_ERROR = str(exc)
-        return False
+    _avail_cache["ts"] = now
+    _avail_cache["val"] = PUSH_AVAILABLE
+    return PUSH_AVAILABLE
 
 
 def generate_vapid():

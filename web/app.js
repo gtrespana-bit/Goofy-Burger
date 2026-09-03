@@ -469,7 +469,12 @@ async function route() {
   await showView(view || 'dashboard', param);
 }
 
+let _refreshBusy = false;
 async function refresh(full = false) {
+  // Si un refresco anterior sigue en vuelo, no lanzamos otro: así los sondeos
+  // nunca se acumulan ni saturan el backend (causa de esperas y errores).
+  if (_refreshBusy) return;
+  _refreshBusy = true;
   try {
     const [info, cams, settings] = await Promise.all([
       api('/system/info'),
@@ -493,6 +498,8 @@ async function refresh(full = false) {
     console.error(err);
     $('#system-sub').textContent = 'sin conexión con el servidor';
     if (err.message === '401' && state.auth.enabled) showLogin();
+  } finally {
+    _refreshBusy = false;
   }
 }
 
@@ -728,29 +735,42 @@ async function renderDashboard() {
     return;
   }
 
-  let dash = { cameras: state.cameras.length, online: 0, recording: 0, events_today: 0, by_label: {}, storage: {} };
-  try {
-    dash = await api('/system/dashboard');
-    state.dash = dash;
-  } catch { /* el panel no debe romperse si falla */ }
+  // Pintamos las tarjetas YA con los datos ya cargados en `state` (sin esperar
+  // otra llamada) y rellenamos los KPI del panel en segundo plano: la vista
+  // "Directo" aparece al instante aunque el dashboard tarde.
+  const online = state.cameras.filter(c => c.health?.state === 'running').length;
+  const recording = state.cameras.filter(c => c.health?.recording).length;
+  const dashFallback = {
+    cameras: state.cameras.length, online, recording,
+    events_today: 0, by_label: {}, storage: state.info.storage || {},
+  };
 
   const groups = {};
   state.cameras
     .slice().sort((a, b) => (a.order || 0) - (b.order || 0))
     .forEach(c => { (groups[c.group || 'General'] ||= []).push(c); });
 
-  const kpis = `
-  <div class="kpis">
-    <div class="kpi"><span class="label">Cámaras</span><b>${dash.online ?? 0}/${dash.cameras ?? state.cameras.length}</b><span class="sub">en directo</span></div>
-    <div class="kpi"><span class="label">Grabación</span><b>${dash.recording ?? 0}</b><span class="sub">ahora mismo</span></div>
-    <div class="kpi"><span class="label">Hoy</span><b>${dash.events_today ?? 0}</b><span class="sub">eventos <span class="muted">${Object.entries(dash.by_label || {}).map(([k, v]) => `${k}:${v}`).join(' · ')}</span></span></div>
-    <div class="kpi"><span class="label">Almacenamiento</span><b>${fmtBytes(((dash.storage?.recordings?.bytes || 0) + (dash.storage?.clips?.bytes || 0)))}</b><span class="sub">${fmtBytes(dash.storage?.disk?.free || 0)} libres</span></div>
+  const kpiMarkup = d => `
+  <div class="kpis" id="kpis">
+    <div class="kpi"><span class="label">Cámaras</span><b>${d.online ?? 0}/${d.cameras ?? state.cameras.length}</b><span class="sub">en directo</span></div>
+    <div class="kpi"><span class="label">Grabación</span><b>${d.recording ?? 0}</b><span class="sub">ahora mismo</span></div>
+    <div class="kpi"><span class="label">Hoy</span><b>${d.events_today ?? 0}</b><span class="sub">eventos <span class="muted">${Object.entries(d.by_label || {}).map(([k, v]) => `${k}:${v}`).join(' · ')}</span></span></div>
+    <div class="kpi"><span class="label">Almacenamiento</span><b>${fmtBytes(((d.storage?.recordings?.bytes || 0) + (d.storage?.clips?.bytes || 0)))}</b><span class="sub">${fmtBytes(d.storage?.disk?.free || 0)} libres</span></div>
   </div>`;
 
-  view.innerHTML = kpis + Object.entries(groups).map(([group, cams]) => `
+  view.innerHTML = kpiMarkup(dashFallback) + Object.entries(groups).map(([group, cams]) => `
     <div class="section-title">${esc(group)}</div>
     <div class="grid cams">${cams.map(camCard).join('')}</div>
   `).join('');
+
+  // KPI del backend en segundo plano (no bloquea la vista ni los streams).
+  api('/system/dashboard')
+    .then(d => {
+      state.dash = d;
+      const k = $('#kpis');
+      if (k) k.outerHTML = kpiMarkup(d);
+    })
+    .catch(() => { /* el panel no debe romperse si falla */ });
 
   $$('[data-cam]').forEach(card => {
     card.querySelector('.feed').onclick = () => { location.hash = '#/camera/' + card.dataset.cam; };
@@ -1008,7 +1028,7 @@ async function renderCamera() {
     </div>
 
     <div>
-      ${cam.onvif?.enabled ? ptzPanel(cam) : ''}
+      ${ptzHasControl(cam) ? ptzPanel(cam) : ''}
       <div class="panel">
         <div class="spread"><h3>Últimos eventos</h3>
           <button class="btn sm ghost" id="cam-all-events">Ver todos</button></div>
@@ -1057,12 +1077,19 @@ async function renderCamera() {
   };
   $('#det-on').onchange = () => {};
   wireEvents();
-  if (cam.onvif?.enabled) wirePtz(cam);
+  if (ptzHasControl(cam)) wirePtz(cam);
+}
+
+function ptzHasControl(cam) {
+  // El PTZ nativo DVRIP (OPPTZControl) no necesita ONVIF ni un flag extra:
+  // basta con que la cámara esté añadida por DVRIP para poder moverla.
+  return !!(cam.onvif?.enabled || cam.dvrip?.enabled);
 }
 
 function ptzPanel(cam) {
+  const dvripOnly = !!cam.dvrip?.enabled && !cam.onvif?.enabled;
   return `<div class="panel">
-    <h3>Control PTZ</h3>
+    <h3>Control PTZ${dvripOnly ? ' <span style="font-weight:400;font-size:12px">· DVRIP</span>' : ''}</h3>
     <div class="ptz">
       <span></span>
       <button data-ptz="0,0.5" title="Arriba">↑</button>
@@ -1074,40 +1101,54 @@ function ptzPanel(cam) {
       <button data-ptz="0,-0.5" title="Abajo">↓</button>
       <button data-ptz="0,1" title="Zoom -">－</button>
     </div>
-    <div class="row">
+    ${dvripOnly ? '' : `<div class="row">
       <select id="presets"><option value="">Presets…</option></select>
       <button class="btn sm" id="btn-gopreset">Ir</button>
       <button class="btn sm ghost" id="btn-home">Posición inicial</button>
-    </div>
+    </div>`}
   </div>`;
 }
 
 function wirePtz(cam) {
+  // Mantén pulsado para mover en continuo; suelta para detener. También
+  // funciona con un simple clic (un paso corto).
   $$('[data-ptz]').forEach(btn => {
-    btn.onclick = async () => {
+    let timer = null;
+    const send = () => {
       const raw = btn.dataset.ptz;
-      try {
-        if (raw === 'stop') await api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'stop' } });
-        else {
-          const [pan, tilt] = raw.split(',').map(Number);
-          await api(`/cameras/${cam.id}/ptz`, {
-            method: 'POST',
-            body: { action: 'move', pan: pan * 0.6, tilt: -tilt * 0.6, zoom: Math.abs(tilt) === 1 ? tilt : 0, duration: 0.5 },
-          });
-        }
-      } catch (e) { toast(e.message, 'err'); }
+      if (raw === 'stop') return api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'stop' } });
+      const [pan, tilt] = raw.split(',').map(Number);
+      const isZoom = pan === 0 && Math.abs(tilt) === 1;
+      return api(`/cameras/${cam.id}/ptz`, {
+        method: 'POST',
+        body: isZoom
+          ? { action: 'move', pan: 0, tilt: 0, zoom: tilt, duration: 0.4 }
+          : { action: 'move', pan: pan * 0.6, tilt: -tilt * 0.6, zoom: 0, duration: 0.4 },
+      });
     };
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      send().catch(err => toast(err.message, 'err'));
+      if (btn.dataset.ptz !== 'stop') {
+        timer = setInterval(() => send().catch(() => {}), 280);
+      }
+    });
+    const clear = () => { if (timer) { clearInterval(timer); timer = null; } };
+    btn.addEventListener('pointerup', clear);
+    btn.addEventListener('pointerleave', clear);
+    btn.addEventListener('pointercancel', clear);
   });
-  $('#btn-home').onclick = () => api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'home' } })
+  const homeBtn = $('#btn-home');
+  if (homeBtn) homeBtn.onclick = () => api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'home' } })
     .then(() => toast('Yendo a la posición inicial')).catch(e => toast(e.message, 'err'));
-  $('#btn-gopreset').onclick = () => {
+  const goBtn = $('#btn-gopreset');
+  if (goBtn) goBtn.onclick = () => {
     const token = $('#presets').value;
     if (token) api(`/cameras/${cam.id}/ptz`, { method: 'POST', body: { action: 'preset', preset: token } })
       .catch(e => toast(e.message, 'err'));
   };
-  api(`/cameras/${cam.id}/ptz/presets`).then(data => {
-    const sel = $('#presets');
-    if (!sel) return;
+  const sel = $('#presets');
+  if (sel) api(`/cameras/${cam.id}/ptz/presets`).then(data => {
     (data.presets || []).forEach(p => {
       sel.insertAdjacentHTML('beforeend', `<option value="${esc(p.token)}">${esc(p.name)}</option>`);
     });
@@ -1511,7 +1552,10 @@ function videoModal(path, title) {
   };
 }
 
+let _eventsBusy = false;
 async function checkNewEvents() {
+  if (_eventsBusy) return;
+  _eventsBusy = true;
   try {
     const data = await api('/events?limit=1');
     const ev = (data.events || [])[0];
@@ -1530,6 +1574,7 @@ async function checkNewEvents() {
     }
     state.lastEventTs = ev.ts;
   } catch { /* silencioso */ }
+  finally { _eventsBusy = false; }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1769,8 +1814,15 @@ async function renderSettings() {
   const canAdmin = !state.auth.enabled || state.auth.user?.role === 'admin';
   let sec = { auth_enabled: false, users: [], api_tokens: [], remote: {} };
   let pushSt = { available: false, enabled: false, public_key: '', subscriptions: 0, hint: '' };
-  if (canAdmin) { try { sec = await api('/settings/auth/status'); } catch { /* panel simple */ }
-    try { pushSt = await api('/push/status'); } catch { /* push opcional */ } }
+  if (canAdmin) {
+    // En paralelo (antes era secuencial y la pestaña "Ajustes" tardaba el doble).
+    const [secR, pushR] = await Promise.all([
+      api('/settings/auth/status').catch(() => null),
+      api('/push/status').catch(() => null),
+    ]);
+    if (secR) sec = secR;
+    if (pushR) pushSt = pushR;
+  }
   $('#view').innerHTML = `
   <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(380px,1fr))">
 
@@ -2542,11 +2594,13 @@ function cameraWizard() {
   // pulsar "Añadir" dos veces).
   function alreadyExists(payload) {
     return state.cameras.find(c => {
+      // Sólo comparamos con cámaras de la MISMA vía: una cámara RTSP y una
+      // DVRIP de la misma lente son entradas distintas y no deben bloquearse.
       if (payload.source_type === 'dvrip' && c.source_type === 'dvrip') {
         return (c.dvrip?.host || '') === (payload.dvrip?.host || '')
           && +c.dvrip?.channel === +(payload.dvrip?.channel ?? -1);
       }
-      if (payload.source_type === 'rtsp') {
+      if (payload.source_type === 'rtsp' && c.source_type === 'rtsp') {
         const a = icseeInfo(payload.url || '');
         const b = icseeInfo(c.url || '');
         if (a.host && a.host === b.host) {
@@ -2862,6 +2916,10 @@ function cameraWizard() {
     try {
       const r = await api('/system/diagnose', {
         method: 'POST',
+        // El diagnóstico sondea puertos, RTSP, DVRIP y ONVIF; puede tardar
+        // más que una petición normal. Le damos margen real para que no salte
+        // el timeout de red de 15 s antes de que el backend termine.
+        timeout: 90000,
         body: { mode: 'diagnose', target: ip, username: $('#w-dis-user').value, password: $('#w-dis-pass').value },
       });
       const ports = (r.ports || []);
@@ -2887,14 +2945,15 @@ function cameraWizard() {
           <div class="grow">
             <div class="title">📷 iCSee multi-lente vía DVRIP/NetIP: ${dv.channels} lente(s)</div>
             <div class="meta">Puerto 34567 · ${esc(dv.device?.hardware || '')} ${esc(dv.device?.software || '')} · ${hasPtz ? 'una lente con PTZ.' : 'PTZ vía ONVIF no detectado.'}</div>
+            <div class="meta" style="margin-top:4px">¿Cuántas lentes tiene? <input type="number" id="w-dv-count" min="1" max="8" value="${dv.lenses.length}" style="width:56px"> <button class="btn sm" id="w-dv-refresh-count">Aplicar</button></div>
           </div>
-          <button class="btn sm primary" id="w-add-dvrip">➕ Añadir los ${dv.lenses.length}</button>
+          <button class="btn sm primary" id="w-add-dvrip">➕ Añadir los <span id="w-dv-count-label">${dv.lenses.length}</span></button>
         </div>`;
-        html += dv.lenses.map(l => `<div class="item"><div class="grow">
+        html += `<div id="w-dv-lens-list">` + dv.lenses.map(l => `<div class="item"><div class="grow">
           <div class="title" style="font-size:12px">${esc(l.label)}${l.recording ? ' · grabando' : ''}${(ovInfo && (ovInfo.profiles[+l.index]?.has_ptz)) ? '<span style="color:var(--accent,#3ddc97)"> · PTZ</span>' : ''}</div>
           <div class="meta" style="font-size:11px">Canal DVRIP ${+l.index} · ${l.bitrate_kbps} kbit/s</div>
         </div>
-        <button class="btn sm" data-dvrip-use="${esc(l.index)}">Usar</button></div>`).join('');
+        <button class="btn sm" data-dvrip-use="${esc(l.index)}">Usar</button></div>`).join('') + `</div>`;
       }
 
       const channels = r.channels && r.channels.groups ? r.channels : null;
@@ -2971,8 +3030,28 @@ function cameraWizard() {
       const addDv = $('#w-add-dvrip', box);
       if (addDv) {
         const dv = r.dvrip;
+        // Permite forzar el número de lentes si la cámara no lo informa bien:
+        // construye una lista de N lentes (índices 0..N-1) a partir del input.
+        const buildLenses = () => {
+          const n = Math.max(1, Math.min(8, parseInt($('#w-dv-count', box)?.value, 10) || (dv.lenses?.length || 1)));
+          const out = [];
+          for (let i = 0; i < n; i++) {
+            const existing = (dv.lenses || []).find(l => +l.index === i);
+            out.push(existing || { index: i, channel: i + 1, label: `Lente ${i + 1}`, bitrate_kbps: 0, recording: false });
+          }
+          return out;
+        };
+        const refreshCount = () => {
+          const n = Math.max(1, Math.min(8, parseInt($('#w-dv-count', box)?.value, 10) || (dv.lenses?.length || 1)));
+          const label = $('#w-dv-count-label', box);
+          if (label) label.textContent = n;
+        };
+        const countInput = $('#w-dv-count', box);
+        if (countInput) countInput.addEventListener('input', refreshCount);
+        const refreshBtn = $('#w-dv-refresh-count', box);
+        if (refreshBtn) refreshBtn.onclick = refreshCount;
         addDv.onclick = () => addAllDvrip(
-          ip, dvUser, dvPass, dv.lenses,
+          ip, dvUser, dvPass, buildLenses(),
           r.onvif_profiles && r.onvif_profiles.profiles ? { ...r.onvif_profiles, password: !!r.onvif_profiles.password } : null
         );
       }
@@ -3172,6 +3251,7 @@ async function cameraSettings(id) {
   const det = cam.detection || {};
   const alerts = cam.alerts || {};
   const ov = cam.overlay || {};
+  const video = cam.video || {};
   const isRtsp = cam.source_type === 'rtsp';
   const isDvrip = cam.source_type === 'dvrip';
   const camDvrip = cam.dvrip || {};
@@ -3285,6 +3365,20 @@ async function cameraSettings(id) {
         ${['top-left','top-right','bottom-left','bottom-right'].map(p => `<option value="${p}" ${ov.position === p ? 'selected' : ''}>${p}</option>`).join('')}
       </select></div>
       <div class="field"><label>Tamaño</label><input type="number" min="0.3" max="2" step="0.1" id="c-ov-scale" value="${ov.font_scale ?? 0.7}"></div>
+    </div>
+
+    <div class="divider"></div>
+    <h4>🔄 Orientación de la imagen</h4>
+    <div class="form-grid">
+      <div class="field"><label>Rotación</label><select id="c-vid-rot">
+        <option value="0" ${(video.rotate || 0) === 0 ? 'selected' : ''}>Sin rotar</option>
+        <option value="90" ${video.rotate === 90 ? 'selected' : ''}>90° (horario)</option>
+        <option value="180" ${video.rotate === 180 ? 'selected' : ''}>180° (boca abajo)</option>
+        <option value="270" ${video.rotate === 270 ? 'selected' : ''}>270° (antihorario)</option>
+      </select></div>
+      <label class="checkline"><input type="checkbox" id="c-vid-fliph" ${video.flip_h ? 'checked' : ''}> Espejo horizontal</label>
+      <label class="checkline"><input type="checkbox" id="c-vid-flipv" ${video.flip_v ? 'checked' : ''}> Espejo vertical</label>
+      <div class="field grid-span2"><span class="hint">Si la cámara sale al revés, elige <b>180°</b>. Se aplica al directo, grabaciones y detección.</span></div>
     </div>
 
     <div class="divider"></div>
@@ -3407,6 +3501,11 @@ async function cameraSettings(id) {
       location: $('#c-ov-loc').checked,
       position: $('#c-ov-pos').value,
       font_scale: +$('#c-ov-scale').value,
+    };
+    payload.video = {
+      rotate: +$('#c-vid-rot').value || 0,
+      flip_h: $('#c-vid-fliph').checked,
+      flip_v: $('#c-vid-flipv').checked,
     };
     await api(`/cameras/${id}`, { method: 'PATCH', body: payload });
     toast('Cámara actualizada'); closeModal(); refresh(true);

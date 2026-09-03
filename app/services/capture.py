@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import platform
 import re
+import select
 import struct
 import subprocess
 import threading
@@ -256,6 +257,41 @@ class FfmpegRTSPReader:
         self.proc = None
 
 
+def _detect_stream_codec(data: bytes) -> Optional[str]:
+    """Detecta h264/hevc mirando los tipos NAL al principio del flujo.
+
+    Usamos valores de byte **inequívocos** (no el tipo con máscara, que es
+    ambiguo: p. ej. ``0x46`` es SEI en H.264 y AUD en HEVC):
+
+    - H.264: SPS=0x67, PPS=0x68, AUD=0x09, IDR=0x65, SEI=0x06.
+    - HEVC : VPS=0x40, SPS=0x42, PPS=0x44.
+
+    Cualquier otra cabecera (slices, AUD/IDR HEVC) se ignora y se sigue
+    leyendo hasta encontrar una concluyente. Devuelve ``None`` si no se puede
+    decidir (el llamador mantiene su orden de prueba por defecto).
+    """
+    i = 0
+    n = len(data)
+    while i < n:
+        if data[i:i + 4] == b"\x00\x00\x00\x01":
+            hdr = i + 4
+            i += 4
+        elif data[i:i + 3] == b"\x00\x00\x01":
+            hdr = i + 3
+            i += 3
+        else:
+            i += 1
+            continue
+        if hdr >= n:
+            break
+        first = data[hdr]
+        if first in (0x40, 0x42, 0x44):              # VPS/SPS/PPS HEVC
+            return "hevc"
+        if first in (0x67, 0x68, 0x09, 0x65, 0x06):  # SPS/PPS/AUD/IDR/SEI H.264
+            return "h264"
+    return None
+
+
 class DvripSource(Source):
     """Fuente nativa por DVRIP/NetIP (puerto 34567) para iCSee/XMEye.
 
@@ -267,18 +303,22 @@ class DvripSource(Source):
 
     label = "dvrip"
     first_frame_timeout = 6.0
+    read_timeout = 5.0  # segundos sin datos de ffmpeg antes de declarar el flujo muerto
 
     def __init__(self, camera: dict):
         super().__init__(camera)
         self.client = None
         self.control_sock = None
         self.data_sock = None
-        self.raw = None
         self._ff_proc: Optional[subprocess.Popen] = None
         self._writer: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._ka_stop = threading.Event()
+        self._ka_thread: Optional[threading.Thread] = None
+        self._ctl_lock = threading.Lock()
         self._lock = threading.Lock()
         self._codec = "h264"
+        self._got_frame = False
 
     @staticmethod
     def _ffmpeg_bin() -> Optional[str]:
@@ -324,27 +364,64 @@ class DvripSource(Source):
     def open(self) -> bool:
         cfg = self._config()
         if not cfg["host"]:
+            self.last_error = "No hay host DVRIP configurado"
             return False
         from .dvrip import stream_channel
 
-        try:
-            client, data_sock, control_sock, raw = stream_channel(
-                cfg["host"], cfg["username"], cfg["password"], cfg["channel"],
-                port=cfg["port"], stream=cfg["stream"],
-            )
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return False
-        self.client, self.data_sock, self.control_sock, self.raw = (
-            client, data_sock, control_sock, raw
-        )
-        self._codec = cfg["codec"]
+        # Demuxers a probar. "auto" prueba h264 y, si no llega vídeo, hevc
+        # (muchas iCSee/XMEye graban H.265/HEVC en el flujo principal).
+        if cfg["codec"] in ("h265", "hevc"):
+            codecs = ["hevc"]
+        elif cfg["codec"] in ("h264",):
+            codecs = ["h264"]
+        else:
+            codecs = ["h264", "hevc"]
+
+        last_error = ""
+        for codec in codecs:
+            self._cleanup()  # cierra un intento previo antes de reconectar
+            self._got_frame = False
+            self._stop.clear()
+            self._codec = codec
+            try:
+                client, data_sock, control_sock = stream_channel(
+                    cfg["host"], cfg["username"], cfg["password"], cfg["channel"],
+                    port=cfg["port"], stream=cfg["stream"],
+                )
+            except Exception as exc:
+                from .dvrip import friendly_login_error
+
+                last_error = friendly_login_error(exc) or f"{type(exc).__name__}: {exc}"
+                continue
+            self.client, self.data_sock, self.control_sock = (client, data_sock, control_sock)
+
+            prefix = b""
+            if cfg["codec"] == "auto":
+                # Detecta h264/hevc mirando los NAL reales del flujo: más rápido
+                # que esperar el timeout con un demuxer equivocado y evita
+                # quedarse con un codec incorrecto (imagen verde/estática).
+                sniffed, prefix = self._sniff_codec()
+                if sniffed and sniffed != codec and sniffed in codecs:
+                    codecs.remove(sniffed)
+                    codecs.insert(0, sniffed)
+                    self._cleanup()
+                    continue
+
+            if self._start_ffmpeg(codec, prefix=prefix):
+                self._start_keepalive()
+                return True
+            last_error = self.last_error or last_error
+
+        self.last_error = last_error or "DVRIP conectado pero no llegó vídeo del canal"
+        self._cleanup()
+        return False
+
+    def _start_ffmpeg(self, demux: str, prefix: bytes = b"") -> bool:
+        """Arranca ffmpeg (con el demuxer dado) y espera el primer frame real."""
         exe = self._ffmpeg_bin()
         if not exe:
             self.last_error = "ffmpeg no está disponible para decodificar DVRIP"
-            self._cleanup()
             return False
-        demux = "hevc" if self._codec in ("h265", "hevc") else "h264"
         try:
             spawn_kwargs: dict = {
                 "stdin": subprocess.PIPE,
@@ -358,6 +435,13 @@ class DvripSource(Source):
             self._ff_proc = subprocess.Popen(
                 [
                     exe, "-hide_banner", "-nostdin", "-loglevel", "error",
+                    # Sin estos flags, ffmpeg hace "probing" del pipe de
+                    # entrada (probesize por defecto ~5 MB / analyzeduration
+                    # 5 s) y no entrega ni un frame hasta completarlo. En un
+                    # directo DVRIP el pipe no llega nunca a ese tamaño y el
+                    # vídeo se queda sin imagen o congelado en el primer frame.
+                    "-fflags", "nobuffer", "-flags", "low_delay",
+                    "-probesize", "32", "-analyzeduration", "0",
                     "-f", demux, "-i", "-",
                     "-f", "image2pipe", "-vcodec", "bmp", "-",
                 ],
@@ -365,9 +449,17 @@ class DvripSource(Source):
             )
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
-            self._cleanup()
+            self._ff_proc = None
             return False
         self._stop.clear()
+        # Reinyecta los bytes que olimos antes de arrancar, para no perder los
+        # primeros fotogramas (SPS/PPS/IDR).
+        if prefix and self._ff_proc.stdin is not None:
+            try:
+                self._ff_proc.stdin.write(prefix)
+                self._ff_proc.stdin.flush()
+            except Exception:
+                pass
         self._writer = threading.Thread(target=self._feed_ffmpeg, daemon=True, name="dvrip-writer")
         self._writer.start()
 
@@ -376,45 +468,158 @@ class DvripSource(Source):
         waiter.start()
         waiter.join(self.first_frame_timeout)
         if waiter.is_alive() or not self._got_frame:
-            self.last_error = "DVRIP conectado pero no llegó vídeo del canal"
-            self._cleanup()
+            self.last_error = f"DVRIP no dio vídeo con demux {demux}"
             return False
+        self.last_error = ""
         return True
-
-    _got_frame = False
 
     def _wait_first_frame(self) -> None:
         try:
-            frame = self._read_one_frame(block=False)
+            frame = self._read_one_frame()
             if frame is not None:
                 self._got_frame = True
         except Exception:
             pass
 
-    def _feed_ffmpeg(self) -> None:
-        if not self._ff_proc or not self.raw:
-            return
+    def _sniff_codec(self, max_bytes: int = 262144) -> Tuple[Optional[str], bytes]:
+        """Lee el inicio del flujo para decidir h264/hevc antes de arrancar ffmpeg.
+
+        Devuelve ``(codec, prefijo)``; el prefijo son los NAL ya consumidos
+        (sin cabeceras de trama) que hay que reinyectar a ffmpeg.
+        """
+        if self.data_sock is None:
+            return None, b""
+        from .dvrip import DVRIP_MEDIA_VIDEO, read_media_packet, strip_media_header
+
+        buf = b""
+        while len(buf) < max_bytes and not self._stop.is_set():
+            try:
+                typ, payload = read_media_packet(self.data_sock)
+            except Exception:
+                # Timeout, paquete vacío o cierre: salimos con lo que haya.
+                break
+            if typ != DVRIP_MEDIA_VIDEO:
+                continue
+            data = strip_media_header(payload)
+            if not data:
+                continue
+            buf += data
+            codec = _detect_stream_codec(buf)
+            if codec:
+                return codec, buf
+        return _detect_stream_codec(buf), buf
+
+    # ------------------------------------------------------------------
+    # keep-alive: sin él, la cámara corta la sesión al llegar a AliveInterval
+    # y el directo se queda congelado en el último fotograma.
+    # ------------------------------------------------------------------
+    def _start_keepalive(self) -> None:
+        self._ka_stop.clear()
+        self._ka_thread = threading.Thread(
+            target=self._keepalive_loop, daemon=True, name="dvrip-keepalive"
+        )
+        self._ka_thread.start()
+
+    def _keepalive_interval(self) -> float:
+        interval = 20.0
         try:
-            while not self._stop.is_set():
-                chunk = self.raw.read(65536)
-                if not chunk:
-                    break
-                if self._ff_proc.stdin is not None:
-                    self._ff_proc.stdin.write(chunk)
-                    self._ff_proc.stdin.flush()
+            login_info = getattr(self.client, "_logininfo", None)
+            alive = getattr(login_info, "timeout", None)
+            if alive and int(alive) > 0:
+                interval = float(int(alive))
         except Exception:
             pass
+        return max(5.0, min(interval, 60.0))
 
-    def _read_exact(self, n: int) -> Optional[bytes]:
+    def _keepalive_loop(self) -> None:
+        from .dvrip import keepalive
+
+        while not self._ka_stop.is_set():
+            interval = self._keepalive_interval()
+            if self._ka_stop.wait(interval):
+                break
+            client, sock = self.client, self.control_sock
+            if client is None or sock is None:
+                break
+            try:
+                with self._ctl_lock:
+                    keepalive(client, sock)
+            except Exception:
+                pass
+
+    def _feed_ffmpeg(self) -> None:
+        if not self._ff_proc or self.data_sock is None:
+            return
+        from .dvrip import DVRIP_MEDIA_VIDEO, read_media_packet, strip_media_header
+
+        errs = 0
+        stdin = self._ff_proc.stdin
+        try:
+            while not self._stop.is_set():
+                try:
+                    typ, payload = read_media_packet(self.data_sock)
+                except (TimeoutError, EOFError):
+                    # Flujo muerto o dispositivo desconectado: fin de datos.
+                    break
+                except Exception:
+                    # Paquete mal formado: lo saltamos, salvo que sea continuo
+                    # (evita un bucle infinito de errores).
+                    errs += 1
+                    if errs > 200:
+                        break
+                    continue
+                errs = 0
+                if typ != DVRIP_MEDIA_VIDEO:
+                    continue
+                data = strip_media_header(payload)
+                if not data:
+                    continue
+                if stdin is not None:
+                    stdin.write(data)
+                    stdin.flush()
+        except Exception:
+            pass
+        finally:
+            # Cerramos el stdin de ffmpeg cuando se acaban los datos: así
+            # ffmpeg ve EOF, entrega los últimos frames pendientes y termina,
+            # y `read()` deja de bloquearse esperando un flujo muerto.
+            try:
+                if stdin is not None:
+                    stdin.close()
+            except Exception:
+                pass
+
+    def _read_exact(self, n: int, timeout: Optional[float] = None) -> Optional[bytes]:
+        """Lee exactamente ``n`` bytes de la salida de ffmpeg con timeout.
+
+        Sin timeout, un flujo muerto (ffmpeg vivo pero sin frames) dejaría el
+        ``read()`` del worker bloqueado para siempre y la última imagen quedaría
+        congelada en la UI. Con timeout devolvemos ``None`` y el worker puede
+        reconectar.
+        """
         if self._ff_proc is None or self._ff_proc.stdout is None:
             return None
+        if timeout is None:
+            timeout = self.read_timeout
         buf = bytearray()
+        deadline = time.time() + timeout
         while len(buf) < n and not self._stop.is_set():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None
+            try:
+                ready, _, _ = select.select(
+                    [self._ff_proc.stdout], [], [], min(remaining, 0.5)
+                )
+            except (ValueError, OSError):  # pragma: no cover - sin select (Windows)
+                ready = [self._ff_proc.stdout]
+            if not ready:
+                continue
             chunk = self._ff_proc.stdout.read(n - len(buf))
             if not chunk:
                 return None if not buf else bytes(buf)
             buf.extend(chunk)
-        return bytes(buf[:n])
+        return bytes(buf) if len(buf) >= n else None
 
     @staticmethod
     def _parse_bmp(data: bytes) -> Optional[np.ndarray]:
@@ -434,17 +639,17 @@ class DvripSource(Source):
         except Exception:
             return None
 
-    def _read_one_frame(self, block: bool = True) -> Optional[np.ndarray]:
+    def _read_one_frame(self, timeout: Optional[float] = None) -> Optional[np.ndarray]:
         """Lee un BMP de la salida de ffmpeg; devuelve un frame BGR."""
         if self._ff_proc is None:
             return None
-        header = self._read_exact(14)
+        header = self._read_exact(14, timeout=timeout)
         if not header or len(header) < 14:
             return None
         size = struct.unpack("<I", header[2:6])[0]
         if size <= 14:
             return None
-        body = self._read_exact(size - 14)
+        body = self._read_exact(size - 14, timeout=timeout)
         if not body or len(body) < size - 14:
             return None
         return self._parse_bmp(header + body)
@@ -453,11 +658,80 @@ class DvripSource(Source):
         frame = self._read_one_frame()
         return (True, frame) if frame is not None else (False, None)
 
+    # ------------------------------------------------------------------
+    # PTZ nativo DVRIP (OPPTZControl): mueve/zoomea por la conexión en vivo,
+    # sin abrir una segunda sesión (muchas cámaras sólo aceptan una).
+    # ------------------------------------------------------------------
+    def ptz(self, action: str, pan: float = 0.0, tilt: float = 0.0,
+            zoom: float = 0.0, preset: str = "", duration: float = 0.4) -> Tuple[bool, str]:
+        """Envía un comando PTZ; devuelve ``(ok, mensaje_de_error)``."""
+        if self.client is None or self.control_sock is None:
+            return False, "Sin conexión DVRIP activa para PTZ"
+        from .dvrip import ptz_control
+
+        channel = int((self.camera.get("dvrip") or {}).get("channel", 0) or 0)
+        commands: List[str] = []
+        preset_num = -1
+        if action in ("stop", "home"):
+            # DVRIP mueve por pasos y se detiene solo; no hay comando de stop.
+            return True, ""
+        if action == "preset":
+            try:
+                preset_num = int(str(preset).strip())
+            except (TypeError, ValueError):
+                preset_num = -1
+            if preset_num < 0:
+                return False, "Preset no válido"
+            commands = ["goto_preset"]
+        elif action in ("zoom_in", "zoom_out"):
+            commands = ["zoom_in" if action == "zoom_in" else "zoom_out"]
+        elif action == "move":
+            if zoom != 0.0:
+                commands = ["zoom_in" if zoom < 0 else "zoom_out"]
+            else:
+                if pan != 0.0:
+                    commands.append("right" if pan > 0 else "left")
+                if tilt != 0.0:
+                    commands.append("up" if tilt < 0 else "down")
+        if not commands:
+            return True, ""
+        try:
+            with self._ctl_lock:
+                for cmd in commands:
+                    if cmd == "goto_preset":
+                        ok = ptz_control(self.client, self.control_sock, cmd,
+                                         channel=channel, preset=preset_num)
+                    else:
+                        ok = ptz_control(self.client, self.control_sock, cmd,
+                                         channel=channel,
+                                         step=self._ptz_step(cmd, pan, tilt, zoom))
+                    if not ok:
+                        return False, "No se pudo enviar el comando PTZ"
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        return True, ""
+
+    @staticmethod
+    def _ptz_step(cmd: str, pan: float, tilt: float, zoom: float) -> int:
+        if "zoom" in cmd:
+            axis = max(1.0, abs(zoom))
+        else:
+            axis = max(abs(pan), abs(tilt), 0.0)
+        step = int(round(axis * 10.0))
+        return max(3, min(step, 12))
+
     def release(self) -> None:
         self._cleanup()
 
     def _cleanup(self) -> None:
         self._stop.set()
+        self._ka_stop.set()
+        if self._ka_thread is not None:
+            try:
+                self._ka_thread.join(timeout=1.0)
+            except Exception:
+                pass
+            self._ka_thread = None
         if self._ff_proc is not None:
             try:
                 if self._ff_proc.stdin is not None:
@@ -478,30 +752,29 @@ class DvripSource(Source):
             except Exception:
                 pass
         self._ff_proc = None
-        if self.raw is not None:
-            try:
-                self.raw.close()
-            except Exception:
-                pass
-        self.raw = None
         if self.data_sock is not None:
             try:
                 self.data_sock.close()
             except Exception:
                 pass
         self.data_sock = None
-        if self.client is not None:
-            try:
-                self.client.logout()
-            except Exception:
-                pass
-        self.client = None
-        if self.control_sock is not None:
-            try:
-                self.control_sock.close()
-            except Exception:
-                pass
-        self.control_sock = None
+        # Serializa logout/cierre con los comandos de control (keep-alive/PTZ)
+        # que escriben en el mismo socket, para no intercalar bytes a medias.
+        with self._ctl_lock:
+            if self.client is not None and self.control_sock is not None:
+                try:
+                    from .dvrip import logout
+
+                    logout(self.client, self.control_sock)
+                except Exception:
+                    pass
+            self.client = None
+            if self.control_sock is not None:
+                try:
+                    self.control_sock.close()
+                except Exception:
+                    pass
+            self.control_sock = None
 
 
 class RtspSource(Cv2Source):
@@ -573,27 +846,11 @@ class RtspSource(Cv2Source):
             self.last_error = "La cámara no tiene URL RTSP"
             return False
         self.last_error = ""
-        # iCSee/XMEye multi-lente suele fallar en RTSP (401) pero funciona por
-        # DVRIP/NetIP 34567. Si la URL ya trae user=..password=..&channel=N,
-        # usamos DVRIP directamente: evita abrir ventanas ffmpeg y repetir 401.
-        if self._is_icsee_target(target):
-            try:
-                from .dvrip import available as dvrip_available
-                dvrip_ok = bool(dvrip_available())
-            except Exception:
-                dvrip_ok = False
-            if dvrip_ok:
-                return self._open_dvrip_fallback(target)
-            # Sin librería DVRIP seguimos probando RTSP por si OpenCV lo abre.
-        if (self.camera.get("dvrip") or {}).get("enabled"):
-            if self._open_dvrip_fallback(target):
-                return True
-            self.last_error = ""
-        # Primero intentamos con OpenCV (rápido y con buena resolución).
+
+        # 1) RTSP primero: es lo que el usuario eligió al añadir la cámara por
+        #    URL RTSP. OpenCV es rápido; si "abre" pero no da frames, soltamos y
+        #    probamos el lector ffmpeg (rtsp_transport tcp), más fiable con iCSee.
         if super().open():
-            # Algunos backends OpenCV dicen "abierto" aunque la cámara no dé
-            # vídeo (sobre todo XMEye/iCSee). Esperamos un primer frame real;
-            # si no llega, soltamos OpenCV y probamos el lector ffmpeg.
             frames: List[Tuple[bool, Optional[np.ndarray]]] = []
             waiter = threading.Thread(
                 target=lambda: frames.append(super().read()),
@@ -604,11 +861,8 @@ class RtspSource(Cv2Source):
             waiter.join(self.first_frame_timeout)
             if not waiter.is_alive() and frames and frames[0][0] and frames[0][1] is not None:
                 return True
-            self.release()  # liberamos el handle cv2 que no produce vídeo
-        # Respaldo con ffmpeg para cámaras iCSee/XMEye que OpenCV no abre o
-        # que se quedan "abiertas" sin enviar frames.
-        # Siempre usamos una resolución pequeña de trabajo; la grabación usa el
-        # flujo original con ffmpeg (record_url).
+            self.release()  # el handle OpenCV no producía vídeo
+
         try:
             self.ffmpeg = FfmpegRTSPReader(target)
             if self.ffmpeg.open():
@@ -619,9 +873,20 @@ class RtspSource(Cv2Source):
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             self.ffmpeg = None
-        # Último intento para XMEye/iCSee: RTSP da 401 pero DVRIP suele abrir.
-        if not self.dvrip_fallback and self._open_dvrip_fallback(target):
-            return True
+
+        # 2) Respaldo DVRIP/NetIP (34567) para iCSee/XMEye: cuando RTSP responde
+        #    401 o no cambia de lente, el protocolo propietario suele abrir cada
+        #    lente. Sólo si la URL parece iCSee o si dvrip.enabled está activo.
+        want_dvrip = bool((self.camera.get("dvrip") or {}).get("enabled")) or self._is_icsee_target(target)
+        if want_dvrip:
+            try:
+                from .dvrip import available as dvrip_available
+
+                if dvrip_available() and self._open_dvrip_fallback(target):
+                    return True
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
+
         return False
 
     def read(self):
@@ -890,6 +1155,7 @@ def probe_snapshot(camera: dict, timeout: float = 8.0) -> Tuple[bool, Optional[n
         while time.time() < deadline:
             ok, frame = src.read()
             if ok and frame is not None:
+                frame = orient_frame(camera, frame)
                 return True, frame, ""
             time.sleep(0.1)
         return False, None, "Tiempo de espera agotado sin recibir imagen"
@@ -900,6 +1166,27 @@ def probe_snapshot(camera: dict, timeout: float = 8.0) -> Tuple[bool, Optional[n
             src.release()
         except Exception:
             pass
+
+
+def orient_frame(camera: dict, frame: np.ndarray) -> np.ndarray:
+    """Aplica la rotación/espejo de ``camera.video`` a un frame (compartida).
+
+    Se usa en el worker, en el sondeo de snapshot y en cualquier lectura que
+    deba salir con la orientación correcta (rotación 90/180/270 + espejos).
+    """
+    cfg = camera.get("video") or {}
+    rotate = int(cfg.get("rotate", 0) or 0) % 360
+    if rotate == 90:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    elif rotate == 180:
+        frame = cv2.rotate(frame, cv2.ROTATE_180)
+    elif rotate == 270:
+        frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if cfg.get("flip_h"):
+        frame = cv2.flip(frame, 1)
+    if cfg.get("flip_v"):
+        frame = cv2.flip(frame, 0)
+    return frame
 
 
 def usb_device_names_windows() -> List[str]:  # pragma: no cover - sólo Windows

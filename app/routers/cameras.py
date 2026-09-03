@@ -48,10 +48,19 @@ def create_camera(payload: Dict[str, Any] = Body(...)):
     if not cam["name"]:
         raise HTTPException(400, "Falta el nombre")
     # No duplicar el mismo dispositivo-canal aunque el usuario pulse "Añadir"
-    # varias veces. Si ya existe, la actualizamos: así una cámara que se había
-    # añadido con credenciales incorrectas se corrige al reintentar el asistente.
+    # varias veces. Si ya existe con la MISMA vía (RTSP/RTSP o DVRIP/DVRIP), la
+    # actualizamos: así una cámara añadida con credenciales incorrectas se
+    # corrige al reintentar el asistente.
     dup = _find_duplicate(cam)
     if dup:
+        if dup.get("source_type") != cam.get("source_type"):
+            # Misma lente añadida por otra vía (RTSP vs DVRIP): no pisamos la
+            # configuración existente, sólo avisamos de que ya está. Evita que
+            # reintentar por RTSP convierta una cámara DVRIP que ya funcionaba.
+            return JSONResponse(
+                {"camera": dup, "duplicate": True, "updated": False},
+                status_code=200,
+            )
         updated_cam = config.update_camera(dup["id"], dict(payload))
         if updated_cam:
             manager.sync(config.cameras())
@@ -120,6 +129,7 @@ def delete_camera(camera_id: str, purge: bool = Query(False, description="Borra 
     if purge:
         from ..config import clips_dir, recordings_dir, snapshots_dir
         from ..models import slugify
+        from ..services.retention import invalidate_storage_cache
         import shutil
 
         slug = slugify(camera_id)
@@ -127,6 +137,7 @@ def delete_camera(camera_id: str, purge: bool = Query(False, description="Borra 
             target = base / slug
             if target.exists():
                 shutil.rmtree(target, ignore_errors=True)
+        invalidate_storage_cache()
     return {"ok": True}
 
 
@@ -254,11 +265,33 @@ def _ptz_blocking(camera: Dict[str, Any], req: PtzRequest):
     return {"ok": True}
 
 
+def _dvrip_ptz(camera: Dict[str, Any], req: PtzRequest):
+    """PTZ nativo DVRIP: reutiliza la conexión en vivo del worker (la cámara
+    suele aceptar una sola sesión; abrir otra daría 'ya conectado')."""
+    worker = manager.worker(camera["id"])
+    source = getattr(worker, "source", None) if worker is not None else None
+    # RtspSource puede llevar un DvripSource interno como respaldo.
+    source = getattr(source, "dvrip_fallback", None) or source
+    if source is None or not hasattr(source, "ptz"):
+        raise HTTPException(409, "La cámara no tiene una conexión DVRIP activa para PTZ")
+    ok, err = source.ptz(
+        req.action, pan=req.pan, tilt=req.tilt, zoom=req.zoom,
+        preset=req.preset, duration=req.duration,
+    )
+    if not ok:
+        raise HTTPException(400, err or "No se pudo enviar el comando PTZ")
+    return {"ok": True}
+
+
 @router.post("/{camera_id}/ptz")
 def ptz_control(camera_id: str, req: PtzRequest):
     camera = config.get_camera(camera_id)
     if not camera:
         raise HTTPException(404, "Cámara no encontrada")
+    dvrip_cfg = camera.get("dvrip") or {}
+    if dvrip_cfg.get("enabled") or camera.get("source_type") == "dvrip":
+        # Control nativo por DVRIP (la vía por la que se añadió la cámara).
+        return _dvrip_ptz(camera, req)
     if not onvif_client.ONVIF_AVAILABLE:
         raise HTTPException(400, "Instala la dependencia ONVIF: pip install onvif-zeep")
     try:
